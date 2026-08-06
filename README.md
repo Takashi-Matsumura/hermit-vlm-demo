@@ -75,3 +75,12 @@ MacBook Air M5 (32GB) での計測値:
 - **gemma-4-12b は reasoning モデル**。`chat_template_kwargs: {enable_thinking: false}` を付けないと思考だけで `max_tokens` を使い切り、`content` が空で返る。
 - **`MAX_FRAMES`（既定16）を超えたフレームは等間隔で間引く**。長い動画で推論が終わらなくなるのを防ぐため。
 - アップロードされた動画と抽出フレームは `public/uploads/<uuid>/` に置かれる。`.gitignore` 済みだが、自動削除はしないので溜まったら消すこと。
+
+## 前提と制約
+
+**localhost で1人が使うデモとして作ってある。そのまま公開しないこと。**
+
+- **認証が無い**。解析結果の URL (`/uploads/<uuid>/...`) と `/api/search` は、uuid を知っていれば誰でも読める。共有環境に置くなら認証と、uuid ではなく所有者に紐づくアクセス制御が要る。
+- **アップロードされたファイルは消えない**。`public/uploads/` に溜まり続ける。
+- 動画は `arrayBuffer()` で一旦メモリに載せるため、上限を `MAX_UPLOAD_MB`（既定 500MB）で制限している。大きな動画を扱うならストリーミング書き込みに変えること。
+- 1リクエストが数十秒〜数分ブロックする。同時に何本も投げると llama-server 側で詰まる。

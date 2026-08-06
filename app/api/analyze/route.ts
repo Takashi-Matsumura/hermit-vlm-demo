@@ -11,12 +11,23 @@ export const runtime = "nodejs";
 
 const UPLOAD_ROOT = path.join(process.cwd(), "public", "uploads");
 
+/** 動画は arrayBuffer() で一旦メモリに載せるので、上限を決めておかないと簡単に落とせる */
+const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB ?? "500");
+const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
+
 export async function POST(request: Request): Promise<Response> {
   const formData = await request.formData();
   const file = formData.get("video");
 
   if (!(file instanceof File)) {
     return Response.json({ error: "動画ファイルが指定されていません" }, { status: 400 });
+  }
+
+  if (file.size > MAX_UPLOAD_BYTES) {
+    return Response.json(
+      { error: `動画は ${MAX_UPLOAD_MB}MB 以下にしてください` },
+      { status: 413 },
+    );
   }
 
   const id = randomUUID();
@@ -94,9 +105,12 @@ export async function POST(request: Request): Promise<Response> {
 
         send({ type: "done", id });
       } catch (error) {
+        // ffmpeg や fetch の例外にはローカルの絶対パスやエンドポイントが載るため、
+        // 詳細はサーバログにだけ出してクライアントには汎用メッセージを返す
+        console.error("[analyze] 解析に失敗しました:", error);
         send({
           type: "error",
-          message: error instanceof Error ? error.message : String(error),
+          message: "解析に失敗しました。サーバのログを確認してください。",
         });
       } finally {
         controller.close();
