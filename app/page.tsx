@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
 import type { AnalyzeEvent, Chapter, SearchHit } from "@/lib/types";
 
@@ -18,9 +18,11 @@ export default function Home() {
   const [status, setStatus] = useState<Status>("idle");
   const [fileName, setFileName] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const [dragging, setDragging] = useState(false);
 
   const [analysisId, setAnalysisId] = useState<string>("");
   const [videoUrl, setVideoUrl] = useState<string>("");
+  const [duration, setDuration] = useState<number>(0);
   const [frameCount, setFrameCount] = useState<number>(0);
   const [timeline, setTimeline] = useState<TimelineItem[]>([]);
   const [summary, setSummary] = useState<string>("");
@@ -48,6 +50,7 @@ export default function Home() {
     setChapters([]);
     setHits(null);
     setFrameCount(0);
+    setDuration(0);
 
     const formData = new FormData();
     formData.append("video", file);
@@ -79,6 +82,7 @@ export default function Home() {
             case "info":
               setAnalysisId(event.id);
               setVideoUrl(event.videoUrl);
+              setDuration(event.duration);
               setFrameCount(event.frameCount);
               break;
             case "caption":
@@ -127,7 +131,51 @@ export default function Home() {
     }
   }, [analysisId, query]);
 
+  // ドロップゾーンの外にファイルを落とすと、ブラウザが動画を開いて画面が飛んでしまう
+  useEffect(() => {
+    const prevent = (e: globalThis.DragEvent) => e.preventDefault();
+    window.addEventListener("dragover", prevent);
+    window.addEventListener("drop", prevent);
+    return () => {
+      window.removeEventListener("dragover", prevent);
+      window.removeEventListener("drop", prevent);
+    };
+  }, []);
+
+  const pickFile = useCallback(
+    (file: File | undefined) => {
+      if (!file) return;
+      if (!file.type.startsWith("video/")) {
+        setFileName(file.name);
+        setError("動画ファイルではありません");
+        setStatus("error");
+        return;
+      }
+      void analyze(file);
+    },
+    [analyze],
+  );
+
+  const handleDrop = useCallback(
+    (e: DragEvent<HTMLElement>) => {
+      e.preventDefault();
+      setDragging(false);
+      pickFile(e.dataTransfer.files[0]);
+    },
+    [pickFile],
+  );
+
   const analyzing = status === "analyzing";
+
+  const statusLine = analyzing
+    ? frameCount > 0
+      ? `解析中… ${timeline.length} / ${frameCount} フレーム`
+      : "シーンを検出しています…"
+    : status === "error"
+      ? "解析に失敗しました"
+      : [duration > 0 && `${duration.toFixed(1)}秒`, frameCount > 0 && `${frameCount}シーン`]
+          .filter(Boolean)
+          .join(" · ");
 
   return (
     <div className="min-h-screen bg-zinc-950 font-sans text-zinc-100">
@@ -139,42 +187,98 @@ export default function Home() {
           </p>
         </header>
 
-        {/* アップロード */}
-        <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
-          <label className="flex cursor-pointer flex-col items-center gap-3 rounded-lg border border-dashed border-zinc-700 px-6 py-10 transition-colors hover:border-zinc-500 hover:bg-zinc-900">
-            <span className="text-sm text-zinc-300">
-              {fileName || "動画ファイルを選択（mp4 / mov など）"}
-            </span>
-            <span className="text-xs text-zinc-500">
-              シーンが切り替わる瞬間だけを自動で抜き出して解析します
-            </span>
-            <input
-              type="file"
-              accept="video/*"
-              className="hidden"
-              disabled={analyzing}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) void analyze(file);
+        {/* 未選択のときだけ大きなドロップゾーンを出し、選択後はタイトル表示に畳む */}
+        {status === "idle" ? (
+          <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
+            <label
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragging(true);
               }}
-            />
-          </label>
+              onDragLeave={() => setDragging(false)}
+              onDrop={handleDrop}
+              className={`flex cursor-pointer flex-col items-center gap-3 rounded-lg border border-dashed px-6 py-14 transition-colors ${
+                dragging
+                  ? "border-emerald-500 bg-emerald-950/30"
+                  : "border-zinc-700 hover:border-zinc-500 hover:bg-zinc-900"
+              }`}
+            >
+              <svg
+                className={`h-10 w-10 transition-colors ${dragging ? "text-emerald-400" : "text-zinc-600"}`}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                aria-hidden="true"
+              >
+                <rect x="2" y="5" width="20" height="14" rx="2" />
+                <path d="m10 9.5 5 2.5-5 2.5z" fill="currentColor" stroke="none" />
+              </svg>
+              <span className="text-sm text-zinc-300">
+                {dragging
+                  ? "ここにドロップ"
+                  : "動画をドラッグ&ドロップ、またはクリックして選択"}
+              </span>
+              <span className="text-xs text-zinc-500">
+                シーンが切り替わる瞬間だけを自動で抜き出して解析します
+              </span>
+              <input
+                type="file"
+                accept="video/*"
+                className="hidden"
+                onChange={(e) => pickFile(e.target.files?.[0])}
+              />
+            </label>
+          </section>
+        ) : (
+          <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 px-6 py-4">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex min-w-0 items-center gap-3">
+                <svg
+                  className="h-8 w-8 shrink-0 text-zinc-600"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  aria-hidden="true"
+                >
+                  <rect x="2" y="5" width="20" height="14" rx="2" />
+                  <path d="m10 9.5 5 2.5-5 2.5z" fill="currentColor" stroke="none" />
+                </svg>
+                <div className="min-w-0">
+                  <h2 className="truncate text-sm font-medium text-zinc-100">{fileName}</h2>
+                  <p className="mt-0.5 text-xs text-zinc-500">{statusLine}</p>
+                </div>
+              </div>
 
-          {analyzing && (
-            <p className="mt-4 text-sm text-zinc-400">
-              解析中…{" "}
-              {frameCount > 0
-                ? `${timeline.length} / ${frameCount} フレーム`
-                : "シーンを検出しています"}
-            </p>
-          )}
+              <label className="shrink-0 cursor-pointer rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800">
+                別の動画を選ぶ
+                <input
+                  type="file"
+                  accept="video/*"
+                  className="hidden"
+                  disabled={analyzing}
+                  onChange={(e) => pickFile(e.target.files?.[0])}
+                />
+              </label>
+            </div>
 
-          {status === "error" && (
-            <p className="mt-4 rounded-lg bg-red-950/50 px-4 py-3 text-sm text-red-300">
-              エラー: {error}
-            </p>
-          )}
-        </section>
+            {analyzing && frameCount > 0 && (
+              <div className="mt-3 h-1 w-full overflow-hidden rounded bg-zinc-800">
+                <div
+                  className="h-full bg-emerald-500 transition-all duration-300"
+                  style={{ width: `${(timeline.length / frameCount) * 100}%` }}
+                />
+              </div>
+            )}
+          </section>
+        )}
+
+        {status === "error" && (
+          <p className="rounded-lg bg-red-950/50 px-4 py-3 text-sm text-red-300">
+            エラー: {error}
+          </p>
+        )}
 
         {videoUrl && (
           <section className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
