@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { captionFrame, embed, splitChapters, summarize } from "@/lib/llm";
-import { detectScenes, extractFrame, getVideoInfo } from "@/lib/video";
+import { extractFrame, getVideoInfo, selectFrameTimes } from "@/lib/video";
 import type { AnalysisResult, AnalyzeEvent, Caption } from "@/lib/types";
 
 // ffmpeg の起動と fs 書き込みを行うので Node.js ランタイムで動かす
@@ -49,7 +49,7 @@ export async function POST(request: Request): Promise<Response> {
 
       try {
         const info = await getVideoInfo(videoPath);
-        const times = await detectScenes(videoPath);
+        const { times, method } = await selectFrameTimes(videoPath);
 
         send({
           type: "info",
@@ -57,6 +57,7 @@ export async function POST(request: Request): Promise<Response> {
           videoUrl: `/uploads/${id}/video.mp4`,
           duration: info.duration,
           frameCount: times.length,
+          method,
         });
 
         const captions: Caption[] = [];
@@ -93,6 +94,7 @@ export async function POST(request: Request): Promise<Response> {
           id,
           videoUrl: `/uploads/${id}/video.mp4`,
           duration: info.duration,
+          method,
           summary,
           chapters,
           captions: captions.map((c, i) => ({

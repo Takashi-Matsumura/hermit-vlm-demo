@@ -10,10 +10,14 @@ export type CaptionWithMeta = Caption & {
   embedding: number[];
 };
 
+/** フレームの選び方。scene = シーン検出 / interval = 等間隔へのフォールバック */
+export type FrameMethod = "scene" | "interval";
+
 export type AnalysisResult = {
   id: string;
   videoUrl: string;
   duration: number;
+  method: FrameMethod;
   summary: string;
   chapters: Chapter[];
   captions: CaptionWithMeta[];
@@ -27,6 +31,7 @@ export type AnalyzeEvent =
       videoUrl: string;
       duration: number;
       frameCount: number;
+      method: FrameMethod;
     }
   | { type: "caption"; index: number; time: number; text: string; imageUrl: string }
   | { type: "summary"; text: string }
