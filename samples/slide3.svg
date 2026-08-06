@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" fill="#422006"/>
+  <text x="64" y="110" font-family="Hiragino Sans, sans-serif" font-size="52" font-weight="bold" fill="#fbbf24">まとめ</text>
+  <text x="64" y="165" font-family="Hiragino Sans, sans-serif" font-size="30" fill="#fed7aa">第2四半期の総括</text>
+
+  <text x="90" y="300" font-family="Hiragino Sans, sans-serif" font-size="34" fill="#ffffff">1. 売上目標を達成 (118%)</text>
+  <text x="90" y="380" font-family="Hiragino Sans, sans-serif" font-size="34" fill="#ffffff">2. 新規顧客が前年比2倍に増加</text>
+  <text x="90" y="460" font-family="Hiragino Sans, sans-serif" font-size="34" fill="#ffffff">3. 休眠顧客の掘り起こしが課題</text>
+
+  <rect x="90" y="550" width="844" height="120" fill="#78350f" rx="12"/>
+  <text x="130" y="600" font-family="Hiragino Sans, sans-serif" font-size="30" fill="#fbbf24">次四半期の目標</text>
+  <text x="130" y="645" font-family="Hiragino Sans, sans-serif" font-size="30" fill="#ffffff">売上 1,500 万円 / 新規顧客 2,200 件</text>
+
+  <rect x="64" y="820" width="896" height="2" fill="#78350f"/>
+  <text x="64" y="890" font-family="Hiragino Sans, sans-serif" font-size="28" fill="#fed7aa">ご清聴ありがとうございました</text>
+</svg>

@@ -32,6 +32,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# 設定の雛形は共有する（実際の値は .env.local に書く）
+!.env.example
 
 # vercel
 .vercel
@@ -39,3 +41,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# アップロードされた動画と抽出フレーム（デモ実行時に生成される）
+/public/uploads

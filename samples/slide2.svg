@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" fill="#0f172a"/>
+  <text x="64" y="110" font-family="Hiragino Sans, sans-serif" font-size="52" font-weight="bold" fill="#ffffff">第2章 顧客分析</text>
+  <text x="64" y="165" font-family="Hiragino Sans, sans-serif" font-size="30" fill="#94a3b8">新規顧客の獲得状況</text>
+
+  <circle cx="300" cy="450" r="180" fill="#334155"/>
+  <path d="M 300 450 L 300 270 A 180 180 0 0 1 455 540 Z" fill="#38bdf8"/>
+  <path d="M 300 450 L 455 540 A 180 180 0 0 1 180 590 Z" fill="#a78bfa"/>
+
+  <text x="580" y="330" font-family="Hiragino Sans, sans-serif" font-size="30" fill="#38bdf8">■ 新規 42%</text>
+  <text x="580" y="400" font-family="Hiragino Sans, sans-serif" font-size="30" fill="#a78bfa">■ リピート 35%</text>
+  <text x="580" y="470" font-family="Hiragino Sans, sans-serif" font-size="30" fill="#94a3b8">■ 休眠 23%</text>
+
+  <text x="580" y="580" font-family="Hiragino Sans, sans-serif" font-size="36" fill="#ffffff">新規顧客 1,820 件</text>
+
+  <rect x="64" y="820" width="896" height="2" fill="#334155"/>
+  <text x="64" y="890" font-family="Hiragino Sans, sans-serif" font-size="28" fill="#94a3b8">株式会社ハーミット 営業本部</text>
+</svg>
