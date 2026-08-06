@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" fill="#1e293b"/>
+  <text x="64" y="110" font-family="Hiragino Sans, sans-serif" font-size="52" font-weight="bold" fill="#ffffff">第1章 売上レポート</text>
+  <text x="64" y="165" font-family="Hiragino Sans, sans-serif" font-size="30" fill="#94a3b8">2026年 第2四半期</text>
+
+  <rect x="64" y="320" width="110" height="180" fill="#475569"/>
+  <rect x="214" y="270" width="110" height="230" fill="#475569"/>
+  <rect x="364" y="220" width="110" height="280" fill="#4ade80"/>
+  <text x="64" y="540" font-family="Hiragino Sans, sans-serif" font-size="26" fill="#94a3b8">4月</text>
+  <text x="214" y="540" font-family="Hiragino Sans, sans-serif" font-size="26" fill="#94a3b8">5月</text>
+  <text x="364" y="540" font-family="Hiragino Sans, sans-serif" font-size="26" fill="#94a3b8">6月</text>
+
+  <text x="580" y="290" font-family="Hiragino Sans, sans-serif" font-size="44" fill="#4ade80">前年比 +34%</text>
+  <text x="580" y="370" font-family="Hiragino Sans, sans-serif" font-size="32" fill="#ffffff">売上高 1,240 万円</text>
+  <text x="580" y="440" font-family="Hiragino Sans, sans-serif" font-size="32" fill="#fbbf24">目標達成率 118%</text>
+
+  <rect x="64" y="820" width="896" height="2" fill="#475569"/>
+  <text x="64" y="890" font-family="Hiragino Sans, sans-serif" font-size="28" fill="#94a3b8">株式会社ハーミット 営業本部</text>
+</svg>
