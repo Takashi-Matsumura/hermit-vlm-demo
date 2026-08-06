@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
-import type { AnalyzeEvent, Chapter, SearchHit } from "@/lib/types";
+import type { AnalyzeEvent, Chapter, FrameMethod, SearchHit } from "@/lib/types";
 
 type TimelineItem = { time: number; text: string; imageUrl: string };
 
@@ -24,6 +24,7 @@ export default function Home() {
   const [videoUrl, setVideoUrl] = useState<string>("");
   const [duration, setDuration] = useState<number>(0);
   const [frameCount, setFrameCount] = useState<number>(0);
+  const [method, setMethod] = useState<FrameMethod | null>(null);
   const [timeline, setTimeline] = useState<TimelineItem[]>([]);
   const [summary, setSummary] = useState<string>("");
   const [chapters, setChapters] = useState<Chapter[]>([]);
@@ -51,6 +52,7 @@ export default function Home() {
     setHits(null);
     setFrameCount(0);
     setDuration(0);
+    setMethod(null);
 
     const formData = new FormData();
     formData.append("video", file);
@@ -84,6 +86,7 @@ export default function Home() {
               setVideoUrl(event.videoUrl);
               setDuration(event.duration);
               setFrameCount(event.frameCount);
+              setMethod(event.method);
               break;
             case "caption":
               setTimeline((prev) => [
@@ -173,7 +176,11 @@ export default function Home() {
       : "シーンを検出しています…"
     : status === "error"
       ? "解析に失敗しました"
-      : [duration > 0 && `${duration.toFixed(1)}秒`, frameCount > 0 && `${frameCount}シーン`]
+      : [
+          duration > 0 && `${duration.toFixed(1)}秒`,
+          frameCount > 0 &&
+            (method === "interval" ? `${frameCount}フレーム（等間隔）` : `${frameCount}シーン`),
+        ]
           .filter(Boolean)
           .join(" · ");
 

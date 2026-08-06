@@ -63,6 +63,18 @@ http://localhost:3000 を開いて動画ファイルを選ぶ。
 
 各シーンの長さは `SECONDS_PER_SLIDE`、枚数は `SLIDES` 配列で変えられる。ラスタライズに `qlmanage` を使う都合で **SVG のキャンバスは正方形にしておくこと**（横長だと右側がクロップされる）。
 
+### 画面録画で試す
+
+スライド動画はカットが明確なのでシーン検出が効くが、**画面録画は挙動がまったく違う**（後述）。等間隔フォールバックの確認には、Wikimedia Commons の CC BY 3.0 素材が使える。サイズが大きいのでリポジトリには含めていない。
+
+```bash
+curl -O https://upload.wikimedia.org/wikipedia/commons/c/c8/Or-import-flat-csv.ogv          # OpenRefine の CSV 取り込み / 2880x1800 / 67秒
+curl -O https://upload.wikimedia.org/wikipedia/commons/0/0a/How_to_make_a_wikilink.webm     # Wikipedia ビジュアルエディタ / 2560x1440 / 84秒
+curl -O https://upload.wikimedia.org/wikipedia/commons/1/1c/Wikipedia_video_tutorial-1-Editing-en.ogv  # 低解像度・長尺 / 400x224 / 197秒
+```
+
+`Or-import-flat-csv.ogv` は等間隔で7フレームが選ばれ、**114秒**で完了する。`countries.csv` やプロジェクト名、列区切りの設定まで読み取れれば正常。
+
 ## 構成
 
 ```
@@ -96,8 +108,10 @@ MacBook Air M5 (32GB) での計測値:
 
 ## 実装上の注意
 
+- **画面録画ではシーン検出がほとんど機能しない。** `select=gt(scene,N)` は全画面の色ヒストグラム差分を見るが、画面録画の変化は局所的（メニューが開く、文字が入力される）なので閾値をいくら下げても反応しない。実測では OpenRefine のチュートリアル動画（67秒）が閾値 0.02 でも 1フレームだった。そのため検出数が `MIN_SCENE_FRAMES`（既定3）に届かなければ**等間隔抽出に自動で切り替える**。どちらが使われたかは UI に「3シーン」「7フレーム（等間隔）」と出る。
 - **シーン検出の閾値は 0.2**。スライドのように変化が緩やかな素材では、よく使われる 0.3 だと検出数がゼロになる。`SCENE_THRESHOLD` で調整する。
 - **先頭フレームはシーン検出に引っかからない**。「直前フレームとの差分」で判定するため、0秒は明示的に足している。
+- **フレームは `FRAME_MAX_WIDTH`（既定1600px）に縮小してから VLM に渡す。** 解像度は prompt トークン数と処理時間に直結する。実測: 2880×1800 で 4,039 tok / 59.7秒 → 1600px で 1,589 tok / 30.9秒。**画面内の文字は変わらず読み取れた**（動画1本で 279秒 → 114秒）。1280px まで落とすと具体的な文字の読み取りが落ちたので、1600px を既定にしている。
 - **gemma-4-12b は reasoning モデル**。`chat_template_kwargs: {enable_thinking: false}` を付けないと思考だけで `max_tokens` を使い切り、`content` が空で返る。
 - **`MAX_FRAMES`（既定16）を超えたフレームは等間隔で間引く**。長い動画で推論が終わらなくなるのを防ぐため。
 - アップロードされた動画と抽出フレームは `public/uploads/<uuid>/` に置かれる。`.gitignore` 済みだが、自動削除はしないので溜まったら消すこと。
