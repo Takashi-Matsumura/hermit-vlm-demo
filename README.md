@@ -1,36 +1,77 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 動画言語化デモ
 
-## Getting Started
+ローカルの VLM で動画を日本語に言語化する Next.js デモ。クラウド API は一切使わない。
 
-First, run the development server:
+動画を投げると、シーンが切り替わる瞬間だけを自動で抜き出し、各フレームを Qwen3-VL-8B が日本語で説明し、gemma-4-12b が全体を要約して章に分割する。キャプションは bge-m3 でベクトル化してあるので、「売上のグラフ」のような自然文でシーンを検索できる。
+
+## 必要な環境
+
+`llama-server` が以下の3ポートで動いていること。
+
+| Port | モデル | 役割 |
+| --- | --- | --- |
+| 8084 | Qwen3-VL-8B-Instruct Q4_K_M + mmproj F16 | フレームの言語化・OCR |
+| 8080 | gemma-4-12b-it Q4_K_M | 要約・章分割 |
+| 8082 | bge-m3 | シーン検索用の embeddings |
+
+`ffmpeg` / `ffprobe` も必要（シーン検出とフレーム抽出に使う）。
+
+Qwen3-VL の起動例:
+
+```bash
+llama-server \
+  -m Qwen3VL-8B-Instruct-Q4_K_M.gguf \
+  --mmproj mmproj-Qwen3VL-8B-Instruct-F16.gguf \
+  --host 127.0.0.1 --port 8084 \
+  -ngl 999 -c 16384 \
+  --temp 0.7 --top-p 0.8 --top-k 20 --presence-penalty 1.5 \
+  --flash-attn on --metrics --cache-reuse 256
+```
+
+エンドポイントや閾値は `.env.local` で変更できる。
+
+## 起動
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+http://localhost:3000 を開いて動画ファイルを選ぶ。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 構成
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+app/
+  page.tsx              UI。SSE を読みながらタイムラインを逐次描画する
+  api/analyze/route.ts  動画を受け取り、進捗を SSE で流しながら解析する
+  api/search/route.ts   キャプションのベクトル検索
+lib/
+  llm.ts                llama-server 3系統のクライアント
+  video.ts              ffmpeg / ffprobe ラッパー
+  types.ts              サーバ・クライアント共有の型
+```
 
-## Learn More
+処理の流れ:
 
-To learn more about Next.js, take a look at the following resources:
+```
+動画 → ffprobe でシーン検出 → 各シーンのフレームを PNG 抽出
+     → Qwen3-VL で1枚ずつ言語化（SSE で逐次返す）
+     → gemma-4-12b で要約 + 章分割 / bge-m3 でベクトル化
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 実測性能
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+MacBook Air M5 (32GB) での計測値:
 
-## Deploy on Vercel
+- 画像1枚 ≒ **prompt 1,050 tokens**、**1フレームあたり 5〜7秒**
+- 3フレームの動画で全体 **約21秒**（要約・章分割・ベクトル化を含む）
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+処理時間の大半は画像エンコードなので、出力を短くしても1フレームあたりの下限は縮まらない。フレーム数がそのまま待ち時間に効く。
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## 実装上の注意
+
+- **シーン検出の閾値は 0.2**。スライドのように変化が緩やかな素材では、よく使われる 0.3 だと検出数がゼロになる。`SCENE_THRESHOLD` で調整する。
+- **先頭フレームはシーン検出に引っかからない**。「直前フレームとの差分」で判定するため、0秒は明示的に足している。
+- **gemma-4-12b は reasoning モデル**。`chat_template_kwargs: {enable_thinking: false}` を付けないと思考だけで `max_tokens` を使い切り、`content` が空で返る。
+- **`MAX_FRAMES`（既定16）を超えたフレームは等間隔で間引く**。長い動画で推論が終わらなくなるのを防ぐため。
+- アップロードされた動画と抽出フレームは `public/uploads/<uuid>/` に置かれる。`.gitignore` 済みだが、自動削除はしないので溜まったら消すこと。
