@@ -2,7 +2,7 @@
  * ローカル llama-server 群のクライアント。
  * 各エンドポイントの役割は README.md の「構成」を参照。
  */
-import type { Caption, Chapter } from "@/lib/types";
+import type { Caption, Chapter, ChatTurn } from "@/lib/types";
 
 const VLM_ENDPOINT = process.env.VLM_ENDPOINT ?? "http://127.0.0.1:8084";
 const LLM_ENDPOINT = process.env.LLM_ENDPOINT ?? "http://127.0.0.1:8080";
@@ -55,18 +55,27 @@ export async function captionFrame(pngBase64: string): Promise<string> {
 }
 
 /**
- * 8080 の gemma-4-12b にテキストを投げる。
+ * 8080 の gemma-4-12b にメッセージ列を投げる。
  * このモデルは reasoning モデルなので enable_thinking を切らないと
  * 思考だけで max_tokens を使い切り content が空で返ってくる。
  */
-async function chat(prompt: string, maxTokens: number): Promise<string> {
+async function chatMessages(messages: ChatTurn[], maxTokens: number): Promise<string> {
   const body = await postJson<ChatResponse>(`${LLM_ENDPOINT}/v1/chat/completions`, {
-    messages: [{ role: "user", content: prompt }],
+    messages,
     max_tokens: maxTokens,
     chat_template_kwargs: { enable_thinking: false },
   });
 
   return body.choices[0]?.message.content?.trim() ?? "";
+}
+
+async function chat(prompt: string, maxTokens: number): Promise<string> {
+  return chatMessages([{ role: "user", content: prompt }], maxTokens);
+}
+
+/** 会話履歴を直近 maxTurns ターン（1ターン=user+assistantの2メッセージ）に切り詰める */
+function trimHistory(history: ChatTurn[], maxTurns: number): ChatTurn[] {
+  return history.slice(-maxTurns * 2);
 }
 
 function formatTimeline(captions: Caption[]): string {
@@ -113,6 +122,68 @@ export async function splitChapters(captions: Caption[]): Promise<Chapter[]> {
   } catch {
     return captions.map((c) => ({ start: c.time, title: c.text.slice(0, 30) }));
   }
+}
+
+/** シーン説明のテキストだけでは答えられないとき、gemma にこの合図を出させる */
+export const NEED_IMAGE_SENTINEL = "NEED_IMAGE";
+
+export function needsImageEscalation(answer: string): boolean {
+  return answer.trim().length === 0 || answer.includes(NEED_IMAGE_SENTINEL);
+}
+
+/**
+ * シーン説明のテキストだけを根拠に質問に答える。
+ * 色・画面内の文字・表情など説明文に書かれていない細部を聞かれた場合は、
+ * 推測せず NEED_IMAGE_SENTINEL を返すよう指示する（フレーム画像へのエスカレーション判定に使う）。
+ */
+export async function answerFromCaptions(
+  question: string,
+  context: Caption[],
+  history: ChatTurn[],
+): Promise<string> {
+  const prompt =
+    `以下は動画の各シーンの説明です。\n\n${formatTimeline(context)}\n\n` +
+    `質問: ${question}\n\n` +
+    `これらの説明だけで質問に答えられる場合は、日本語で簡潔に回答してください。` +
+    `説明に書かれていない細部（色、画面内の文字、表情、細かい動作など）を問われていて` +
+    `説明文からは判断できない場合は、推測せずに「${NEED_IMAGE_SENTINEL}」とだけ出力してください。`;
+
+  return chatMessages([...trimHistory(history, 3), { role: "user", content: prompt }], 400);
+}
+
+export type FrameInput = { time: number; base64: string };
+
+/** 関連フレーム画像を Qwen3-VL に見せ直して質問に答える。 */
+export async function answerFromFrames(
+  question: string,
+  frames: FrameInput[],
+  history: ChatTurn[],
+): Promise<string> {
+  const timeLabels = frames.map((f, i) => `${i + 1}枚目: ${f.time.toFixed(1)}秒`).join(" / ");
+
+  const body = await postJson<ChatResponse>(`${VLM_ENDPOINT}/v1/chat/completions`, {
+    messages: [
+      ...trimHistory(history, 3),
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `${timeLabels} のフレームです。日本語で簡潔に回答してください。\n質問: ${question}`,
+          },
+          ...frames.map((f) => ({
+            type: "image_url" as const,
+            image_url: { url: `data:image/png;base64,${f.base64}` },
+          })),
+        ],
+      },
+    ],
+    max_tokens: 300,
+    temperature: 0.7,
+    top_p: 0.8,
+  });
+
+  return body.choices[0]?.message.content?.trim() ?? "";
 }
 
 /** bge-m3 でテキストをベクトル化する。検索用。 */
