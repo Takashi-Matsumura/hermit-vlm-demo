@@ -46,3 +46,18 @@ export type SearchHit = {
   imageUrl: string;
   score: number;
 };
+
+/** /api/ask に送る会話履歴の1ターン */
+export type ChatTurn = { role: "user" | "assistant"; content: string };
+
+/** 回答がテキストのみで生成されたか、フレーム画像を見直して生成されたか */
+export type AskSource = "llm" | "vlm";
+
+export type AskCitation = { time: number; text: string };
+
+/** /api/ask のレスポンス */
+export type AskResponse = {
+  answer: string;
+  source: AskSource;
+  citations: AskCitation[];
+};
