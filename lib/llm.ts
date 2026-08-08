@@ -2,7 +2,7 @@
  * ローカル llama-server 群のクライアント。
  * 各エンドポイントの役割は README.md の「構成」を参照。
  */
-import type { Caption, Chapter, ChatTurn, Utterance } from "@/lib/types";
+import type { Caption, Chapter, ChatTurn, ManualStep, Utterance } from "@/lib/types";
 
 const VLM_ENDPOINT = process.env.VLM_ENDPOINT ?? "http://127.0.0.1:8084";
 const LLM_ENDPOINT = process.env.LLM_ENDPOINT ?? "http://127.0.0.1:8080";
@@ -47,6 +47,45 @@ export async function captionFrame(pngBase64: string): Promise<string> {
       },
     ],
     max_tokens: 300,
+    temperature: 0.7,
+    top_p: 0.8,
+  });
+
+  return body.choices[0]?.message.content?.trim() ?? "";
+}
+
+/**
+ * PC操作画面のフレームを、操作マニュアルの素材として言語化する。
+ * captionFrame との違いは、「何が写っているか」ではなく「どこに何の操作要素があるか」を
+ * 具体名で書かせる点。ボタン名やメニュー項目名はそのまま手順書に載るので、
+ * 画面に出ている文字列を正確に書き写させることを最優先にしている。
+ */
+export async function captionOperationFrame(pngBase64: string): Promise<string> {
+  const body = await postJson<ChatResponse>(`${VLM_ENDPOINT}/v1/chat/completions`, {
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text:
+              "これはPCの操作画面を録画した動画の1フレームです。操作マニュアルを作る材料として、日本語で説明してください。\n" +
+              "次の順に書いてください。\n" +
+              "1. どのアプリケーション・どの画面か（ウィンドウのタイトルやタブ名があれば、そのまま書き写す）\n" +
+              "2. 画面に出ている操作要素（メニュー、ボタン、入力欄、チェックボックス、ダイアログ、エラー表示）の名前と位置\n" +
+              "3. マウスカーソル・選択枠・ハイライトがあれば、その位置と対象の名前\n" +
+              "4. 入力欄に文字が入っていれば、その文字列\n" +
+              "ボタン名・メニュー項目名・入力値は、画面に表示されているとおりに「」で囲んで正確に書き写してください。\n" +
+              "画面から読み取れないことは推測しないでください。4文以内で。",
+          },
+          {
+            type: "image_url",
+            image_url: { url: `data:image/png;base64,${pngBase64}` },
+          },
+        ],
+      },
+    ],
+    max_tokens: 400,
     temperature: 0.7,
     top_p: 0.8,
   });
@@ -140,6 +179,61 @@ export async function splitChapters(captions: Caption[], utterances: Utterance[]
     return chapters;
   } catch {
     return captions.map((c) => ({ start: c.time, title: c.text.slice(0, 30) }));
+  }
+}
+
+/**
+ * 映像の説明と音声の書き起こしから、操作手順の列を作る。
+ * 発話は操作者本人の説明なので「何を・なぜ」の主根拠にし、映像は音声では言っていない
+ * ボタン名・入力値を補う材料として使わせる。失敗時は splitChapters と同じ考え方で
+ * 1フレーム=1手順にフォールバックする。
+ */
+export async function generateManualSteps(
+  captions: Caption[],
+  utterances: Utterance[] = [],
+): Promise<ManualStep[]> {
+  const raw = await chat(
+    `以下は、PCの操作画面を録画しながら、操作者がその操作の意味を音声で説明している動画の解析結果です。\n\n` +
+      `${buildContext(captions, utterances)}\n\n` +
+      `この動画から操作マニュアル（手順書）を作ります。上から順に実行できる手順に分割してください。\n` +
+      `「音声の書き起こし」は操作者本人の説明です。何をしているか、なぜそうするのかは必ずこちらを根拠にしてください。\n` +
+      `「映像の説明」は各時刻に画面へ表示されていたものです。音声では言っていないボタン名・メニュー名・入力値を補うために使ってください。\n` +
+      `title は「〜をクリックする」のように動作が分かる短い命令形（30文字以内）にしてください。\n` +
+      `description は1〜3文で、何をするかに加えて、音声で理由が語られていればそれも書いてください。\n` +
+      `画面上の名前は上の説明に書かれているとおりに書き写し、書かれていない名前や数値を推測して補わないでください。\n` +
+      `挨拶や雑談だけの区間は手順にしないでください。\n` +
+      `JSON配列だけを出力してください。各要素は ` +
+      `{"time": 開始秒(数値), "title": "手順のタイトル", "description": "手順の説明"} です。` +
+      `説明文やコードブロックは不要です。`,
+    2000,
+  );
+
+  try {
+    // モデルが ```json フェンスや前置きを付けることがあるので配列部分だけ取り出す
+    const match = raw.match(/\[[\s\S]*\]/);
+    if (!match) throw new Error("JSON配列が見つかりません");
+
+    const parsed: unknown = JSON.parse(match[0]);
+    if (!Array.isArray(parsed)) throw new Error("配列ではありません");
+
+    const steps = parsed
+      .filter((s): s is ManualStep =>
+        typeof s === "object" && s !== null &&
+        typeof (s as ManualStep).time === "number" &&
+        typeof (s as ManualStep).title === "string" &&
+        typeof (s as ManualStep).description === "string")
+      .map((s) => ({ time: s.time, title: s.title.trim(), description: s.description.trim() }))
+      .filter((s) => s.title.length > 0)
+      .sort((a, b) => a.time - b.time);
+
+    if (steps.length === 0) throw new Error("有効な手順がありません");
+    return steps;
+  } catch {
+    return captions.map((c) => ({
+      time: c.time,
+      title: c.text.slice(0, 30),
+      description: c.text,
+    }));
   }
 }
 

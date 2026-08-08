@@ -1,0 +1,106 @@
+/**
+ * 操作マニュアル生成のうち、モデルにも ffmpeg にも依存しない純粋な処理。
+ * サーバ（/api/manual/analyze）とクライアント（/manual）の両方から import するので、
+ * このファイルでは node:* を使わない。Utterance も lib/audio.ts ではなく lib/types.ts から
+ * 型として取る（lib/audio.ts は node:child_process を引き込む）。
+ */
+import type { ManualStepWithMeta, Utterance } from "@/lib/types";
+
+export type MergedFrameTime = { time: number; fromUtterance: boolean };
+
+/**
+ * シーン検出（または等間隔）で選ばれた時刻に、発話の開始時刻を足す。
+ * 画面録画ではシーン検出がほとんど反応しないが、ナレーション付き操作動画では
+ * 「発話の切れ目 ≒ 1操作」に近いという仮説による。
+ *
+ * - シーン時刻を先に確定させるので、utterances が空なら selectFrameTimes と結果が完全一致する
+ * - minGap より近い時刻は同じ画面とみなして捨てる（1フレーム5〜7秒かかるため）
+ * - duration を超える時刻は捨てる（whisper のセグメント終端は尺をわずかに超えることがあり、
+ *   そのまま extractFrame に渡すと PNG が出力されず readFile が ENOENT で落ちる）
+ */
+export function mergeFrameTimes(
+  sceneTimes: number[],
+  utterances: Utterance[],
+  options: { duration: number; maxFrames: number; minGap: number },
+): MergedFrameTime[] {
+  const { duration, maxFrames, minGap } = options;
+  const accepted: MergedFrameTime[] = [];
+
+  const push = (raw: number, fromUtterance: boolean) => {
+    // captions[].time / PNGファイル名 / lib/analysis.ts:framePath() の3者を一致させるため、
+    // ここで3桁に丸めた値を唯一の正とする
+    const time = Number(raw.toFixed(3));
+    if (!Number.isFinite(time) || time < 0) return;
+    if (duration > 0 && time >= duration - 0.05) return;
+    if (accepted.some((a) => Math.abs(a.time - time) < minGap)) return;
+    accepted.push({ time, fromUtterance });
+  };
+
+  // シーン検出の時刻を先に入れることで、既存デモが見ていたフレームは必ず残る
+  for (const t of sceneTimes) push(t, false);
+  for (const u of utterances) push(u.start, true);
+
+  accepted.sort((a, b) => a.time - b.time);
+  return thinOut(accepted, maxFrames);
+}
+
+/** 先頭は必ず残しつつ、maxFrames 以内に等間隔で間引く（lib/video.ts の thinOut と同じ考え方） */
+function thinOut(frames: MergedFrameTime[], maxFrames: number): MergedFrameTime[] {
+  if (frames.length <= maxFrames) return frames;
+  const step = frames.length / maxFrames;
+  return Array.from({ length: maxFrames }, (_, i) => frames[Math.floor(i * step)]);
+}
+
+/** モデルが返した時刻を、実在するフレームの時刻に寄せる（サムネイル404防止） */
+export function snapToFrameTime(time: number, frameTimes: number[]): number {
+  return frameTimes.reduce(
+    (best, t) => (Math.abs(t - time) < Math.abs(best - time) ? t : best),
+    frameTimes[0] ?? 0,
+  );
+}
+
+/** m:ss。app/page.tsx にも同名の関数があるが、既存ファイルは変更しない方針なので共通化していない */
+export function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/**
+ * 手順を Markdown にする。
+ *
+ * 画像は /uploads/<id>/frames/*.png というこのアプリ内のパスなので、
+ * 書き出した .md 単体では画像が表示されない（このデモを動かしているサーバが
+ * 生きている間だけ解決する）。README の「localhost で1人が使うデモとして
+ * 作ってある」という前提のとおり、画像ごと持ち出せる形にはしていない。
+ * origin を渡すと http://localhost:3000/... の絶対URLになり、
+ * ローカルで開いている限りはプレビューできる。
+ */
+export function toManualMarkdown(input: {
+  title: string;
+  summary: string;
+  steps: ManualStepWithMeta[];
+  origin?: string;
+}): string {
+  const { title, summary, steps, origin = "" } = input;
+
+  const lines: string[] = [`# ${title}`, "", "> この手順書は動画から自動生成されたものです。内容は必ず確認してください。", ""];
+
+  if (summary) lines.push("## 概要", "", summary, "");
+
+  lines.push("## 手順", "");
+  steps.forEach((step, i) => {
+    lines.push(
+      `### ${i + 1}. ${step.title}`,
+      "",
+      `![手順${i + 1}](${origin}${step.imageUrl})`,
+      "",
+      step.description,
+      "",
+      `_動画 ${formatTime(step.time)} 付近_`,
+      "",
+    );
+  });
+
+  return lines.join("\n");
+}
