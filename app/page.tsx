@@ -11,6 +11,7 @@ import type {
   ChatTurn,
   FrameMethod,
   SearchHit,
+  Utterance,
 } from "@/lib/types";
 
 type TimelineItem = { time: number; text: string; imageUrl: string };
@@ -49,6 +50,7 @@ export default function Home() {
   const [timeline, setTimeline] = useState<TimelineItem[]>([]);
   const [summary, setSummary] = useState<string>("");
   const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [utterances, setUtterances] = useState<Utterance[]>([]);
 
   const [query, setQuery] = useState<string>("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
@@ -75,6 +77,7 @@ export default function Home() {
     setTimeline([]);
     setSummary("");
     setChapters([]);
+    setUtterances([]);
     setHits(null);
     setFrameCount(0);
     setDuration(0);
@@ -123,6 +126,9 @@ export default function Home() {
               break;
             case "summary":
               setSummary(event.text);
+              break;
+            case "utterances":
+              setUtterances(event.utterances);
               break;
             case "chapters":
               setChapters(event.chapters);
@@ -504,6 +510,29 @@ export default function Home() {
                             </span>
                             <span className="text-sm leading-6 text-zinc-200">{item.text}</span>
                           </div>
+                        </button>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+
+              {/* 字幕（音声トラックが無い動画では何も表示しない） */}
+              {utterances.length > 0 && (
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
+                  <h2 className="mb-4 text-sm font-medium text-zinc-400">字幕</h2>
+                  <ol className="flex max-h-80 flex-col gap-1 overflow-y-auto">
+                    {utterances.map((u) => (
+                      <li key={u.start}>
+                        <button
+                          type="button"
+                          onClick={() => seekTo(u.start)}
+                          className="flex w-full items-baseline gap-3 rounded p-2 text-left transition-colors hover:bg-zinc-800/70"
+                        >
+                          <span className="shrink-0 font-mono text-xs text-emerald-400">
+                            {formatTime(u.start)}
+                          </span>
+                          <span className="text-sm text-zinc-200">{u.text}</span>
                         </button>
                       </li>
                     ))}

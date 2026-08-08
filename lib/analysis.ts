@@ -24,7 +24,13 @@ export async function loadAnalysis(id: string): Promise<AnalysisResult | null> {
   }
 }
 
-/** クエリに近いキャプションを上位 topK 件、コサイン類似度の降順で返す。ベクトル化に失敗したら null */
+/**
+ * クエリに近いキャプション・発話を上位 topK 件、コサイン類似度の降順で返す。
+ * 発話ヒットは text に「（発話）」を付け、映像由来と区別できるようにする
+ * （/api/ask の answerFromCaptions にそのまま渡っても、gemma がテキストだけで
+ * 答えられる根拠として発話内容を認識できる）。
+ * ベクトル化に失敗したら null。
+ */
 export async function retrieve(
   result: AnalysisResult,
   query: string,
@@ -33,13 +39,19 @@ export async function retrieve(
   const [queryVector] = await embed([query]);
   if (!queryVector) return null;
 
-  return result.captions
-    .map((c) => ({
-      time: c.time,
-      text: c.text,
-      imageUrl: c.imageUrl,
-      score: cosineSimilarity(queryVector, c.embedding),
-    }))
+  const captionHits: SearchHit[] = result.captions.map((c) => ({
+    time: c.time,
+    text: c.text,
+    imageUrl: c.imageUrl,
+    score: cosineSimilarity(queryVector, c.embedding),
+  }));
+  const utteranceHits: SearchHit[] = (result.utterances ?? []).map((u) => ({
+    time: u.start,
+    text: `（発話）${u.text}`,
+    score: cosineSimilarity(queryVector, u.embedding),
+  }));
+
+  return [...captionHits, ...utteranceHits]
     .sort((a, b) => b.score - a.score)
     .slice(0, topK);
 }

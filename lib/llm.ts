@@ -2,7 +2,7 @@
  * ローカル llama-server 群のクライアント。
  * 各エンドポイントの役割は README.md の「構成」を参照。
  */
-import type { Caption, Chapter, ChatTurn } from "@/lib/types";
+import type { Caption, Chapter, ChatTurn, Utterance } from "@/lib/types";
 
 const VLM_ENDPOINT = process.env.VLM_ENDPOINT ?? "http://127.0.0.1:8084";
 const LLM_ENDPOINT = process.env.LLM_ENDPOINT ?? "http://127.0.0.1:8080";
@@ -82,19 +82,38 @@ function formatTimeline(captions: Caption[]): string {
   return captions.map((c) => `[${c.time.toFixed(1)}秒] ${c.text}`).join("\n");
 }
 
+function formatUtterances(utterances: Utterance[]): string {
+  return utterances
+    .map((u) => `[${u.start.toFixed(1)}秒〜${u.end.toFixed(1)}秒] 「${u.text}」`)
+    .join("\n");
+}
+
+/**
+ * 映像の説明と音声の書き起こしをセクションに分けて渡す。
+ * 両者は時間粒度が異なる（フレームは数秒おき、発話は文単位）ので時刻でインターリーブせず、
+ * 統合判断はモデルに任せる。
+ */
+function buildContext(captions: Caption[], utterances: Utterance[]): string {
+  const sections = [`# 映像の説明\n${formatTimeline(captions)}`];
+  if (utterances.length > 0) {
+    sections.push(`# 音声の書き起こし\n${formatUtterances(utterances)}`);
+  }
+  return sections.join("\n\n");
+}
+
 /** タイムライン全体を1つの要約文にまとめる。 */
-export async function summarize(captions: Caption[]): Promise<string> {
+export async function summarize(captions: Caption[], utterances: Utterance[] = []): Promise<string> {
   return chat(
-    `以下は動画の各シーンの説明です。全体を1つの要約文章にまとめてください。\n\n${formatTimeline(captions)}`,
+    `以下は動画の映像説明と音声の書き起こしです。全体を1つの要約文章にまとめてください。\n\n${buildContext(captions, utterances)}`,
     600,
   );
 }
 
 /** タイムラインを意味のまとまりで章に区切る。失敗時は1フレーム=1章にフォールバックする。 */
-export async function splitChapters(captions: Caption[]): Promise<Chapter[]> {
+export async function splitChapters(captions: Caption[], utterances: Utterance[] = []): Promise<Chapter[]> {
   const raw = await chat(
-    `以下は動画の各シーンの説明です。内容のまとまりごとに章に分割してください。\n\n` +
-      `${formatTimeline(captions)}\n\n` +
+    `以下は動画の映像説明と音声の書き起こしです。内容のまとまりごとに章に分割してください。\n\n` +
+      `${buildContext(captions, utterances)}\n\n` +
       `章タイトルは上の説明に書かれている語句をそのまま使ってください。` +
       `書かれていない数字や固有名詞を推測して補わないでください。\n` +
       `JSON配列だけを出力してください。各要素は {"start": 開始秒(数値), "title": "章タイトル"} です。` +
