@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
+import { transcribe } from "@/lib/audio";
 import { captionFrame, embed, splitChapters, summarize } from "@/lib/llm";
 import { extractFrame, getVideoInfo, selectFrameTimes } from "@/lib/video";
 import type { AnalysisResult, AnalyzeEvent, Caption } from "@/lib/types";
@@ -60,6 +61,13 @@ export async function POST(request: Request): Promise<Response> {
           method,
         });
 
+        // 文字起こしは3秒程度で終わるため、数十秒かかるフレームキャプションのループと
+        // 並行に走らせる。失敗しても動画解析全体は止めない。
+        const transcriptionPromise = transcribe(videoPath, dir).catch((error) => {
+          console.error("[analyze] 文字起こしに失敗しました:", error);
+          return [];
+        });
+
         const captions: Caption[] = [];
 
         for (const [index, time] of times.entries()) {
@@ -80,16 +88,25 @@ export async function POST(request: Request): Promise<Response> {
           });
         }
 
-        // 要約と章分割は同じタイムラインを入力にするので並行して走らせる
+        // フレームループより先に終わっているので追加の待ち時間は発生しない
+        const utterances = await transcriptionPromise;
+        if (utterances.length > 0) {
+          send({ type: "utterances", utterances });
+        }
+
+        // 要約と章分割は同じタイムライン（+発話）を入力にするので並行して走らせる
         const [summary, chapters] = await Promise.all([
-          summarize(captions),
-          splitChapters(captions),
+          summarize(captions, utterances),
+          splitChapters(captions, utterances),
         ]);
         send({ type: "summary", text: summary });
         send({ type: "chapters", chapters });
 
         // 検索用のベクトルは結果と一緒に保存し、/api/search から読み出す
-        const embeddings = await embed(captions.map((c) => c.text));
+        const [captionEmbeddings, utteranceEmbeddings] = await Promise.all([
+          embed(captions.map((c) => c.text)),
+          utterances.length > 0 ? embed(utterances.map((u) => u.text)) : Promise.resolve([]),
+        ]);
         const result: AnalysisResult = {
           id,
           videoUrl: `/uploads/${id}/video.mp4`,
@@ -100,7 +117,11 @@ export async function POST(request: Request): Promise<Response> {
           captions: captions.map((c, i) => ({
             ...c,
             imageUrl: `/uploads/${id}/frames/f_${c.time.toFixed(3)}.png`,
-            embedding: embeddings[i] ?? [],
+            embedding: captionEmbeddings[i] ?? [],
+          })),
+          utterances: utterances.map((u, i) => ({
+            ...u,
+            embedding: utteranceEmbeddings[i] ?? [],
           })),
         };
         await writeFile(path.join(dir, "result.json"), JSON.stringify(result));
