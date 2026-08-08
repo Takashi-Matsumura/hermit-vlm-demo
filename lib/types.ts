@@ -57,6 +57,11 @@ export type SearchHit = {
   /** 音声由来のヒットには画像が無い */
   imageUrl?: string;
   score: number;
+  /**
+   * caption = 映像フレームの説明（time は実在するフレーム PNG の時刻）
+   * utterance = 音声の書き起こし（time は発話区間の開始秒で、対応するフレーム PNG は無い）
+   */
+  source: "caption" | "utterance";
 };
 
 /** /api/ask に送る会話履歴の1ターン */
