@@ -67,8 +67,16 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     // テキストだけでは答えられない（または画像での見直しを明示要求された）ので、
-    // 上位フレームの画像を Qwen3-VL に見せ直す
-    const escalationHits = hits.slice(0, ASK_VLM_FRAMES);
+    // 上位フレームの画像を Qwen3-VL に見せ直す。
+    // 発話ヒットの time には対応するフレーム PNG が無いため、画像を読める
+    // 映像キャプション由来のヒットだけを対象にする。
+    let escalationHits = hits.filter((h) => h.source === "caption").slice(0, ASK_VLM_FRAMES);
+    if (escalationHits.length === 0) {
+      // 検索上位が発話ヒットだけだった場合は、映像キャプションに絞って改めて検索する
+      // （動画には必ず最低1枚のフレームがあるため、この呼び出しは空にならない）
+      escalationHits = (await retrieve(result, searchQuery, ASK_VLM_FRAMES, ["caption"])) ?? [];
+    }
+
     const frames = await Promise.all(
       escalationHits.map(async (h) => ({
         time: h.time,
