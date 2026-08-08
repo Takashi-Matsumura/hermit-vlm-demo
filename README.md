@@ -8,6 +8,8 @@
 
 音声トラックがあれば whisper.cpp で日本語の発話も書き起こし、全体要約・章分割・質問応答・シーン検索のすべてに反映する。音声が無い動画は今まで通り、文字起こし関連の処理も UI も一切出さない。
 
+`/manual`（操作マニュアル自動生成）では、この同じ仕組みを使って「操作画面を録画しながら操作者がナレーションする」動画から手順書を自動生成する。発話の区切れ目もフレーム抽出時刻に使うことで、画面録画特有のシーン検出の弱さを補い、手順の粒度を発話に近づけている。トップページ（`/`）の実装はサンプルとして変更していない。
+
 ## 必要な環境
 
 `llama-server` が以下の3ポートで動いていること。
@@ -83,24 +85,42 @@ curl -O https://upload.wikimedia.org/wikipedia/commons/1/1c/Wikipedia_video_tuto
 
 `Or-import-flat-csv.ogv` は等間隔で7フレームが選ばれ、**114秒**で完了する。`countries.csv` やプロジェクト名、列区切りの設定まで読み取れれば正常。
 
+### 操作マニュアル自動生成（`/manual`）で試す
+
+`WHISPER_MODEL` の設定と、ナレーション付きの画面録画（または合成音声つきサンプル）が要る。
+
+- `samples/test-video.mp4`（無音）を投げると、`utteranceFrameCount === 0` かつ 0.0/4.0/8.0秒の
+  3フレームが選ばれることを確認できる（フレーム時刻マージが `selectFrameTimes` の結果を
+  壊していない証拠になる）
+- `say -v Kyoko -o narration.aiff "..."` で日本語ナレーションを合成し、
+  `ffmpeg -i test-video.mp4 -i narration.aiff -c:v copy -c:a aac -shortest manual-sample.mp4`
+  で音声つきサンプルを作れる。発話3つに対しフレームが3枚増え、手順が3つ生成されれば正常
+- 実際の画面録画は `Cmd+Shift+5` で内蔵マイクを選び、操作を声に出しながら録画する
+
 ## 構成
 
 ```
 app/
-  page.tsx              UI。SSE を読みながらタイムラインを逐次描画する
-  api/analyze/route.ts  動画を受け取り、進捗を SSE で流しながら解析する
-  api/search/route.ts   キャプションのベクトル検索
-  api/ask/route.ts      動画への質問応答（テキスト→必要なら画像にエスカレーション）
+  page.tsx                     UI。SSE を読みながらタイムラインを逐次描画する（サンプル・変更なし）
+  api/analyze/route.ts         動画を受け取り、進捗を SSE で流しながら解析する
+  api/search/route.ts          キャプションのベクトル検索
+  api/ask/route.ts             動画への質問応答（テキスト→必要なら画像にエスカレーション）
+  manual/page.tsx              操作マニュアル自動生成のUI
+  manual/ManualSteps.tsx       手順一覧 + Markdownエクスポート
+  manual/QaChat.tsx            手順に質問するチャット（/api/ask を再利用）
+  api/manual/analyze/route.ts  操作マニュアル用の解析エンドポイント
 lib/
-  llm.ts                llama-server 3系統のクライアント
-  video.ts              ffmpeg / ffprobe ラッパー
-  audio.ts              whisper.cpp による音声の文字起こし
-  analysis.ts           result.json のロードとベクトル検索（search / ask 共通）
-  types.ts              サーバ・クライアント共有の型
+  llm.ts                 llama-server 3系統のクライアント
+  video.ts                ffmpeg / ffprobe ラッパー
+  audio.ts                whisper.cpp による音声の文字起こし
+  analysis.ts             result.json のロードとベクトル検索（search / ask 共通）
+  manual.ts                操作マニュアル用の純粋関数（フレーム時刻マージ・Markdown生成）
+  sse.ts                   SSE読み取りの汎用ヘルパー（/manual 用）
+  types.ts                 サーバ・クライアント共有の型
 samples/                動作確認用のサンプル動画とその生成スクリプト
 ```
 
-処理の流れ:
+処理の流れ（`/`）:
 
 ```
 動画 → ffprobe でシーン検出 → 各シーンのフレームを PNG 抽出
@@ -110,6 +130,17 @@ samples/                動作確認用のサンプル動画とその生成ス�
 
 質問応答: 質問をベクトル検索（映像キャプション + 発話） → gemma-4-12b がテキストだけで回答を試みる
         → 細部が判断できないときだけ、上位フレームの画像を Qwen3-VL に見せ直す
+```
+
+処理の流れ（`/manual`）:
+
+```
+動画 → whisper.cpp で文字起こし（シーン検出と並行実行）
+     → シーン検出/等間隔の時刻に、発話の開始時刻をマージしてフレーム時刻を決定
+     → Qwen3-VL で操作要素（ボタン・メニュー名など）を中心にフレームを言語化
+     → gemma-4-12b が「音声を主根拠、映像を補助情報」として手順(steps)を生成
+     → steps から章(chapters)を導出、bge-m3 でベクトル化して result.json に保存
+       （result.json の形は AnalysisResult のスーパーセットなので /api/ask・/api/search は無変更で動く）
 ```
 
 ## 実測性能
@@ -131,6 +162,8 @@ MacBook Air M5 (32GB) での計測値:
 - **`MAX_FRAMES`（既定16）を超えたフレームは等間隔で間引く**。長い動画で推論が終わらなくなるのを防ぐため。
 - アップロードされた動画と抽出フレームは `public/uploads/<uuid>/` に置かれる。`.gitignore` 済みだが、自動削除はしないので溜まったら消すこと。
 - **音声認識は whisper-cli を都度起動する方式。** モデルロードは実測 137ms、32秒の動画の文字起こし全体でも3.1秒程度と軽量なため、llama-server のような常駐サーバ化はしていない。音声トラックが無い動画、`WHISPER_MODEL` 未設定、文字起こし自体の失敗は、いずれも動画解析全体を止めずに黙ってスキップする（UIにも字幕関連の要素が一切出ない）。
+- **`/manual` は発話区切れ目もフレーム抽出時刻に使う。** 画面録画はシーン検出がほとんど機能しないため（上記）、「発話の切れ目 ≒ 1操作ステップ」という仮説で補っている。上限は `MANUAL_MAX_FRAMES`（既定24、`MAX_FRAMES` とは独立）。手順が機械的（1フレーム=1手順）になっている場合は、キャプション枚数と発話件数が多すぎて `generateManualSteps` の gemma 呼び出しがコンテキスト長を超え、静かにフォールバックしている可能性が高い。
+- **`/manual` の result.json は `AnalysisResult` のスーパーセット。** `steps` フィールドが増えているだけなので、`/api/search`・`/api/ask` は無変更で動く。この設計により `/manual` にも既存の Q&A チャットとシーン検索がそのまま使える。
 
 ## 前提と制約
 
@@ -140,3 +173,4 @@ MacBook Air M5 (32GB) での計測値:
 - **アップロードされたファイルは消えない**。`public/uploads/` に溜まり続ける。
 - 動画は `arrayBuffer()` で一旦メモリに載せるため、上限を `MAX_UPLOAD_MB`（既定 500MB）で制限している。大きな動画を扱うならストリーミング書き込みに変えること。
 - 1リクエストが数十秒〜数分ブロックする。同時に何本も投げると llama-server 側で詰まる。
+- **`/manual` で書き出す Markdown の画像リンクは、このデモのサーバに依存する相対パス**（`/uploads/<uuid>/frames/...`）。サーバが動いている環境でしか画像が表示されない。配布するなら画像ごと固める仕組みが要る。

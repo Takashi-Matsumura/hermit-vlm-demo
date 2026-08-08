@@ -78,3 +78,59 @@ export type AskResponse = {
   source: AskSource;
   citations: AskCitation[];
 };
+
+/** 操作マニュアルの1手順 */
+export type ManualStep = {
+  /** 手順を始める時刻(秒)。保存時に抽出済みフレームの時刻へスナップしてある */
+  time: number;
+  /** 「〜をクリックする」のような、動作が分かる短いタイトル */
+  title: string;
+  /** 何をするか。音声で理由が語られていれば「なぜそうするのか」も含む */
+  description: string;
+};
+
+export type ManualStepWithMeta = ManualStep & {
+  /** time に対応するフレーム PNG。手順のサムネイルと Markdown の画像に使う */
+  imageUrl: string;
+};
+
+/**
+ * 操作マニュアルの解析結果。
+ * AnalysisResult のスーパーセットにしてあるので、/api/search と /api/ask は
+ * コードを変えずにそのまま使える（loadAnalysis は JSON.parse の結果を
+ * AnalysisResult として扱うだけなので、steps は型から見えないままランタイムには残る）。
+ */
+export type ManualResult = AnalysisResult & {
+  steps: ManualStepWithMeta[];
+};
+
+/**
+ * /api/manual/analyze が SSE で流すイベント。
+ * AnalyzeEvent とは分離してある（info/caption の形が異なり、同じ判別子で違う形の
+ * バリアントは union に共存できないため）。
+ */
+export type ManualAnalyzeEvent =
+  | {
+      type: "info";
+      id: string;
+      videoUrl: string;
+      duration: number;
+      frameCount: number;
+      method: FrameMethod;
+      utteranceCount: number;
+      /** frameCount のうち、発話の開始時刻に由来する枚数 */
+      utteranceFrameCount: number;
+    }
+  | {
+      type: "caption";
+      index: number;
+      time: number;
+      text: string;
+      imageUrl: string;
+      fromUtterance: boolean;
+    }
+  | { type: "utterances"; utterances: Utterance[] }
+  | { type: "summary"; text: string }
+  | { type: "steps"; steps: ManualStepWithMeta[] }
+  | { type: "done"; id: string }
+  | { type: "error"; message: string };
