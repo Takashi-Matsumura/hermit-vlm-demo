@@ -27,7 +27,7 @@ export default function ManualSteps({
   onSeek: (time: number) => void;
   /** スクリーンショット注釈サブエージェント（/api/manual/annotate）が実行中かどうか */
   annotating: boolean;
-  annotateProgress: { done: number; total: number };
+  annotateProgress: { round: number; done: number; total: number };
   onReannotate: () => void;
   /** スクリーンショット検証サブエージェント（/api/manual/verify）が実行中かどうか */
   verifying: boolean;
@@ -100,7 +100,8 @@ export default function ManualSteps({
             </span>
           ) : annotating ? (
             <span className="text-xs text-zinc-500">
-              注釈サブエージェント実行中… {annotateProgress.done} / {annotateProgress.total}
+              注釈サブエージェント実行中… {annotateProgress.round}周目 {annotateProgress.done} /{" "}
+              {annotateProgress.total}
             </span>
           ) : (
             steps.length > 0 && (

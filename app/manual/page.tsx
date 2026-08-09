@@ -44,7 +44,8 @@ export default function ManualPage() {
   const [searching, setSearching] = useState(false);
 
   const [annotating, setAnnotating] = useState(false);
-  const [annotateProgress, setAnnotateProgress] = useState<{ done: number; total: number }>({
+  const [annotateProgress, setAnnotateProgress] = useState<{ round: number; done: number; total: number }>({
+    round: 0,
     done: 0,
     total: 0,
   });
@@ -72,10 +73,14 @@ export default function ManualPage() {
    * スクリーンショット注釈サブエージェントを起動する。手順が確定した result.json が
    * 既にサーバにある前提（analyze の done イベント後に呼ぶ）なので、id だけで動く。
    * 失敗してもマニュアル本体（手順・ZIP）はそのまま使えるので、エラーはログに残すだけにする。
+   *
+   * crop-and-zoom で最大3周ループする（verify と同じ設計）。周回ごとに
+   * round-start/round-done が届き、その間の annotation イベントには「その時点での
+   * 最良の注釈」が入っている（N周目が見つからなくても、前周の正しい枠を消さない）。
    */
   const annotate = useCallback(async (id: string) => {
     setAnnotating(true);
-    setAnnotateProgress({ done: 0, total: 0 });
+    setAnnotateProgress({ round: 0, done: 0, total: 0 });
 
     try {
       const res = await fetch("/api/manual/annotate", {
@@ -90,8 +95,8 @@ export default function ManualPage() {
         if (activeIdRef.current !== id) return;
 
         switch (event.type) {
-          case "start":
-            setAnnotateProgress({ done: 0, total: event.total });
+          case "round-start":
+            setAnnotateProgress({ round: event.round, done: 0, total: event.targets });
             break;
           case "annotation":
             setAnnotateProgress((prev) => ({ ...prev, done: prev.done + 1 }));
@@ -103,6 +108,8 @@ export default function ManualPage() {
               ),
             );
             break;
+          case "start":
+          case "round-done":
           case "done":
           case "error":
             break;
@@ -195,7 +202,7 @@ export default function ManualPage() {
     setVerifying(false);
     setVerifyProgress({ round: 0, done: 0, total: 0 });
     setAnnotating(false);
-    setAnnotateProgress({ done: 0, total: 0 });
+    setAnnotateProgress({ round: 0, done: 0, total: 0 });
 
     const formData = new FormData();
     formData.append("video", file);
