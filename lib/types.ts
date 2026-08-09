@@ -114,6 +114,16 @@ export type StepAnnotation = {
   frameHeight: number;
 };
 
+/** スクリーンショット検証サブエージェント（/api/manual/verify）が1手順に下した判定 */
+export type StepVerification = {
+  /** 最終的に採用された画像が説明と一致していたか */
+  matches: boolean;
+  /** 3回のループでも一致する画像が見つからなかった場合 true。UIで「要確認」表示に使う */
+  needsReview: boolean;
+  /** 何周目で確定したか（1〜3） */
+  resolvedAtRound: number;
+};
+
 export type ManualStepWithMeta = ManualStep & {
   /** time に対応するフレーム PNG。手順のサムネイルと Markdown の画像に使う */
   imageUrl: string;
@@ -123,6 +133,11 @@ export type ManualStepWithMeta = ManualStep & {
    * 任意プロパティにしてあるので、注釈が無い既存の result.json はそのまま読める。
    */
   annotation?: StepAnnotation;
+  /**
+   * スクリーンショット検証サブエージェント（/api/manual/verify）の結果。
+   * 未実行なら undefined。任意プロパティなので既存 result.json はそのまま読める。
+   */
+  verification?: StepVerification;
 };
 
 /**
@@ -183,4 +198,25 @@ export type ManualAnnotateEvent =
       reason?: "no_json" | "not_found" | "no_valid_target" | "failed";
     }
   | { type: "done"; annotated: number }
+  | { type: "error"; message: string };
+
+/**
+ * /api/manual/verify が SSE で流すイベント。
+ * ManualAnnotateEvent とも別 union にしてある（役割が完全に分離しているため）。
+ */
+export type ManualVerifyEvent =
+  | { type: "round-start"; round: number; targets: number }
+  | {
+      type: "verification";
+      round: number;
+      /** steps 配列の添字。並列実行なので順不同で届く。突合はこれで行う（time ではない） */
+      index: number;
+      time: number;
+      /** 画像を差し替えた場合のみ入る（time/imageUrl が変わったことをクライアントに伝える） */
+      replacedImageUrl?: string;
+      replacedTime?: number;
+      verification: StepVerification;
+    }
+  | { type: "round-done"; round: number; fixed: number; remaining: number }
+  | { type: "done"; totalFixed: number; needsReview: number }
   | { type: "error"; message: string };

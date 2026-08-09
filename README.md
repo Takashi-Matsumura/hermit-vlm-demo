@@ -107,6 +107,16 @@ curl -N -X POST http://localhost:3000/api/manual/annotate \
 
 手順ごとに `annotation` イベントが SSE で流れる。`annotation: null` は棄却（`reason` を参照）。操作対象が画面に写っている手順では赤い矩形の `bbox_2d` が、写っていない手順（タイトルスライドなど）では `not_found` が返れば正常。
 
+`done` イベントの直後は、注釈より先にスクリーンショット検証サブエージェントが自動で走る。UI を経由せず単独で試すには:
+
+```bash
+curl -N -X POST http://localhost:3000/api/manual/verify \
+  -H 'content-type: application/json' \
+  -d '{"id":"<解析結果のuuid>"}'
+```
+
+`round-start` → 手順ごとの `verification`（差し替えたら `replacedImageUrl`/`replacedTime` が入る）→ `round-done` が最大3周流れ、最後に `done`（`totalFixed`/`needsReview`）で終わる。実データ（460秒・22手順）では1周目で10件差し替え、2周目で残り1件が確定し、`needsReview: 0` で終わった。
+
 ## 構成
 
 ```
@@ -121,14 +131,17 @@ app/
   manual/AnnotatedFrame.tsx    スクリーンショットに赤枠・番号バッジを重ねる SVG オーバーレイ
   manual/bakeAnnotatedPng.ts   注釈を Canvas で PNG に焼き込む（ZIP エクスポート用）
   api/manual/analyze/route.ts  操作マニュアル用の解析エンドポイント
+  api/manual/verify/route.ts   スクリーンショット検証サブエージェントのエンドポイント
   api/manual/annotate/route.ts スクリーンショット注釈サブエージェントのエンドポイント
 lib/
-  llm.ts                 llama-server 3系統のクライアント（注釈サブエージェント annotateStepTarget を含む）
+  llm.ts                 llama-server 3系統のクライアント（annotateStepTarget / verifyStepScreenshot を含む）
   video.ts                ffmpeg / ffprobe ラッパー
   audio.ts                whisper.cpp による音声の文字起こし
   analysis.ts             result.json のロードとベクトル検索（search / ask 共通）
   manual.ts                操作マニュアル用の純粋関数（フレーム時刻マージ・同一フレーム手順のグループ化・Markdown生成）
   annotation.ts            注釈サブエージェントの純粋関数（応答のパース・妥当性検証・座標の幾何計算）
+  verification.ts          検証サブエージェントの純粋関数（候補時刻の選定・応答のパース）
+  concurrency.ts            ワーカープール方式の並列実行ヘルパー（annotate / verify 共通）
   sse.ts                   SSE読み取りの汎用ヘルパー（/manual 用）
   types.ts                 サーバ・クライアント共有の型
 samples/                動作確認用のサンプル動画とその生成スクリプト
@@ -157,8 +170,17 @@ samples/                動作確認用のサンプル動画とその生成ス�
      → steps から章(chapters)を導出、bge-m3 でベクトル化して result.json に保存
        （result.json の形は AnalysisResult のスーパーセットなので /api/ask・/api/search は無変更で動く）
 
-done イベントの直後、クライアントが /api/manual/annotate を自動起動する:
-     手順ごとに Qwen3-VL へ「この手順で操作する対象はどれか」を問い、
+done イベントの直後、クライアントが /api/manual/verify → /api/manual/annotate の順に自動起動する:
+
+verify: 手順の説明文と現在のスクリーンショットが食い違っていないか Qwen3-VL に確認させる。
+        食い違っていれば、その手順に時刻的に近い発話の前後から動画を新規に ffmpeg 抽出し、
+        「現在の画像 + 新規候補」を1回の呼び出しでまとめて見せて最も合うものを選ばせる
+        → 差し替えたら steps[].time/imageUrl を更新し、古い注釈は無効化する
+        → 「検出→修正→再検出」を最大3周（2周目以降は前回不一致だった手順のみ対象）
+        → 3周しても合わなければ verification.needsReview = true を付けて確定
+        → SSE で1手順ずつ返しつつ、result.json に書き戻す
+
+annotate: 手順ごとに Qwen3-VL へ「この手順で操作する対象はどれか」を問い、
      正規化座標([0,1000])でバウンディングボックスを受け取る（3並列）
      → 妥当性検証（範囲外・退化・巨大すぎる枠は描かずに棄却）を通った枠だけ採用
      → SSE で1手順ずつ返しつつ、result.json に書き戻す（一時ファイル + rename でアトミックに）
@@ -191,19 +213,24 @@ MacBook Air M5 (32GB) での計測値:
 - **誤った枠を描くくらいなら描かない、を検証の基本方針にしている。** Qwen3-VL は対象が画面に無くても「見つけた」と答えがちなので、`found` が厳密に `true` の場合だけを信用し、範囲外座標・退化した枠（8px未満）・巨大すぎる枠（面積比15%超）はクランプせずに棄却する。実測では手順文とスナップ先フレームが食い違うケース（「終了」ボタンに言及する手順文に対し、実際のフレームには存在しない）でも、モデルは画面に実在する別の要素を選ぶか `found: false` を返し、存在しない要素の枠を捏造することはなかった。
 - **注釈の焼き込みはクライアント（ブラウザ）側で行い、サーバに画像処理ライブラリを足していない。** sharp の SVG composite は Pango/fontconfig 依存で、フォント解決に失敗すると番号バッジの文字が黙って消える（ffmpeg にも drawtext=freetype が無く代替できない）。ブラウザの Canvas ならフォントが確実に使える。
 - **`/api/manual/annotate` は既存の `result.json` を書き換える。** 解析（analyze）は新規作成だが、注釈は数分かけて作った既存ファイルの破壊的更新になるため、一時ファイルに書いてから `rename` でアトミックに置き換える。
+- **手順の説明文とスクリーンショットが食い違う不具合を実データで確認した。** `generateManualSteps` はテキストのみ（キャプション+発話）を gemma に渡し、画像も「実在するフレーム時刻の一覧」も渡さない。`snapToFrameTime` は最近傍に無条件で寄せるだけで距離の上限も無い。実測（460秒・22手順・24フレーム・51発話）では、発話の51%（26/51件）が「2秒以内に対応するフレームが存在しない」状態だった。ナレーションが「〜をクリックします」と言い始めた瞬間＝まだ動作前の画面を指す構造的な半ステップ遅れもある。
+- **スクリーンショット検証サブエージェント（`/api/manual/verify`）は、検証と候補選択を1回のVLM呼び出しに統合している。** `answerFromFrames` と同じ「複数画像を1回のchat completionで見せる」パターンで、「現在の画像」+「新規候補（最大4枚）」をまとめて見せ、どれが説明に合うか選ばせる。これにより手順数×候補数の呼び出し爆発を避ける。候補時刻は `lib/verification.ts` の `selectCandidateTimes` が、手順の時刻に最も近い発話の前後（`start`/`end` 両方）から選ぶ。実データで検証: 22手順中10件が1周目で差し替わり、1件が2周目で確定、`needsReview: 0` で完了した。
+- **verify は annotate より先に実行する。** 画像を差し替えたら古い赤枠注釈は意味を持たなくなるため、差し替え時に `annotation` を無効化する。UI の自動起動チェーンも `analyze の done → verify（最大3周）→ annotate` の順。
 
-## スクリーンショット注釈サブエージェント
+## スクリーンショット注釈・検証サブエージェント
 
-`/api/manual/annotate` は、Claude Code の「サブエージェント」（専用の役割を持ち、独立した入出力契約で動き、結果だけを親に返す仕組み）と同じ考え方をこのアプリの中で実装したもの。
+`/api/manual/annotate` と `/api/manual/verify` は、Claude Code の「サブエージェント」（専用の役割を持ち、独立した入出力契約で動き、結果だけを親に返す仕組み）と同じ考え方をこのアプリの中で実装したもの。
 
-| サブエージェントの性質 | このアプリでの実装 |
-| --- | --- |
-| 専用の役割プロンプト | `annotateStepTarget`（`lib/llm.ts`）1関数に閉じている。「画面に何があるか」を書かせる `captionOperationFrame` とは別プロンプト |
-| 独立した入出力契約 | `StepAnnotation` 型と `parseStepAnnotation`（`lib/annotation.ts`）が唯一の受け口。呼び出し元は生のモデル出力を直接は見ない |
-| 個別失敗の隔離 | 1手順の失敗（パース失敗・棄却・例外）は `null` になるだけで、他の手順の処理は止まらない |
-| 並列実行 | `MANUAL_ANNOTATE_CONCURRENCY`（既定3）のワーカープールで並列に処理する |
-| 親からの分離 | 手順を生成する gemma は注釈の存在を知らない。注釈は解析（analyze）とは別のエンドポイント・別の SSE ストリームの後段ステージ |
-| 観測可能性 | 採用・棄却の結果が理由（`reason`）つきで1手順ずつ SSE に流れる。UI には「注釈サブエージェント実行中… n / m」と出る |
+| サブエージェントの性質 | 注釈（annotate） | 検証（verify） |
+| --- | --- | --- |
+| 専用の役割プロンプト | `annotateStepTarget`（`lib/llm.ts`）。「画面に何があるか」を書かせる `captionOperationFrame` とは別プロンプト | `verifyStepScreenshot`（`lib/llm.ts`）。「現在の画像+候補」から最も説明に合うものを選ばせる |
+| 独立した入出力契約 | `StepAnnotation` 型と `parseStepAnnotation`（`lib/annotation.ts`） | `parseVerification`（`lib/verification.ts`）。呼び出し元は生のモデル出力を直接は見ない |
+| 個別失敗の隔離 | 1手順の失敗は `null` になるだけで、他の手順の処理は止まらない | 1手順の失敗は現状維持のまま次周に持ち越すか `needsReview` になるだけ |
+| 並列実行 | `MANUAL_ANNOTATE_CONCURRENCY`（既定3） | `MANUAL_VERIFY_CONCURRENCY`（既定2。画像を複数枚同時に送るぶん1リクエストが重いため） |
+| 親からの分離 | 手順を生成する gemma は注釈の存在を知らない。解析とは別エンドポイント・別 SSE の後段ステージ | 同左。さらに annotate 自身からも独立しており、annotate の前段ステージとして動く |
+| 観測可能性 | 採用・棄却の結果が理由（`reason`）つきで1手順ずつ SSE に流れる | 周回ごとの差し替え件数・残件数が SSE に流れる。「検出→修正→再検出」を最大3周繰り返す様子がそのまま進捗になる |
+
+両方とも `lib/concurrency.ts` の `mapWithConcurrency`（ワーカープール）を共有している。
 
 ## 前提と制約
 

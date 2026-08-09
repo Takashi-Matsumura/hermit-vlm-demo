@@ -9,6 +9,7 @@ import type {
   ManualAnalyzeEvent,
   ManualAnnotateEvent,
   ManualStepWithMeta,
+  ManualVerifyEvent,
   SearchHit,
   Utterance,
 } from "@/lib/types";
@@ -44,6 +45,13 @@ export default function ManualPage() {
 
   const [annotating, setAnnotating] = useState(false);
   const [annotateProgress, setAnnotateProgress] = useState<{ done: number; total: number }>({
+    done: 0,
+    total: 0,
+  });
+
+  const [verifying, setVerifying] = useState(false);
+  const [verifyProgress, setVerifyProgress] = useState<{ round: number; done: number; total: number }>({
+    round: 0,
     done: 0,
     total: 0,
   });
@@ -107,6 +115,68 @@ export default function ManualPage() {
     }
   }, []);
 
+  /**
+   * スクリーンショット検証サブエージェントを起動する。手順の説明文と画像が
+   * 食い違っている場合、動画から新規フレームを抽出して差し替える（最大3周ループ）。
+   * 完了後に注釈サブエージェントを起動する（画像が確定してから赤枠を付けるため。
+   * 差し替えが起きた手順は verify 側で古い注釈を無効化済み）。
+   */
+  const verify = useCallback(
+    async (id: string) => {
+      setVerifying(true);
+      setVerifyProgress({ round: 0, done: 0, total: 0 });
+
+      try {
+        const res = await fetch("/api/manual/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id }),
+        });
+        if (!res.body) throw new Error("レスポンスが空です");
+
+        await readSse<ManualVerifyEvent>(res.body, (event) => {
+          if (activeIdRef.current !== id) return;
+
+          switch (event.type) {
+            case "round-start":
+              setVerifyProgress({ round: event.round, done: 0, total: event.targets });
+              break;
+            case "verification":
+              setVerifyProgress((prev) => ({ ...prev, done: prev.done + 1 }));
+              // index で突合する（time ではない。annotate と同じ理由）
+              setSteps((prev) =>
+                prev.map((step, i) =>
+                  i === event.index
+                    ? {
+                        ...step,
+                        time: event.replacedTime ?? step.time,
+                        imageUrl: event.replacedImageUrl ?? step.imageUrl,
+                        // 画像が変わったら古い注釈（赤枠）はもう合わないので消す
+                        annotation: event.replacedImageUrl ? undefined : step.annotation,
+                        verification: event.verification,
+                      }
+                    : step,
+                ),
+              );
+              break;
+            case "round-done":
+            case "done":
+            case "error":
+              break;
+          }
+        });
+      } catch (e) {
+        console.error("[manual] スクリーンショットの検証に失敗しました:", e);
+      } finally {
+        if (activeIdRef.current === id) setVerifying(false);
+      }
+
+      // verify が失敗しても、まだ意味のあるスクリーンショットには注釈を付けたいので続行する
+      void annotate(id);
+    },
+    [annotate],
+  );
+
   const analyze = useCallback(async (file: File) => {
     setStatus("analyzing");
     setFileName(file.name);
@@ -120,8 +190,10 @@ export default function ManualPage() {
     setDuration(0);
     setUtteranceCount(0);
     setUtteranceFrameCount(0);
-    // 前の動画の注釈サブエージェントがまだ走っていても、その結果は新しい動画に適用しない
+    // 前の動画のサブエージェントがまだ走っていても、その結果は新しい動画に適用しない
     activeIdRef.current = "";
+    setVerifying(false);
+    setVerifyProgress({ round: 0, done: 0, total: 0 });
     setAnnotating(false);
     setAnnotateProgress({ done: 0, total: 0 });
 
@@ -166,8 +238,8 @@ export default function ManualPage() {
           case "done":
             setStatus("done");
             // result.json は route.ts 側で書き終わってから done が送られるので、
-            // このタイミングなら annotate から必ず読める
-            void annotate(event.id);
+            // このタイミングなら verify（この後 annotate も）から必ず読める
+            void verify(event.id);
             break;
           case "error":
             setError(event.message);
@@ -179,13 +251,19 @@ export default function ManualPage() {
       setError(e instanceof Error ? e.message : String(e));
       setStatus("error");
     }
-  }, [annotate]);
+  }, [verify]);
 
   /** 「注釈をやり直す」ボタン用。実行中の多重起動は防ぐ（スロットを食い潰さないため） */
   const reannotate = useCallback(() => {
     if (!analysisId || annotating) return;
     void annotate(analysisId);
   }, [analysisId, annotating, annotate]);
+
+  /** 「検証をやり直す」ボタン用。verify は完了後に annotate も起動する */
+  const reverify = useCallback(() => {
+    if (!analysisId || verifying || annotating) return;
+    void verify(analysisId);
+  }, [analysisId, verifying, annotating, verify]);
 
   const search = useCallback(async () => {
     if (!query.trim() || !analysisId) return;
@@ -392,6 +470,9 @@ export default function ManualPage() {
                 annotating={annotating}
                 annotateProgress={annotateProgress}
                 onReannotate={reannotate}
+                verifying={verifying}
+                verifyProgress={verifyProgress}
+                onReverify={reverify}
               />
 
               {summary && (
