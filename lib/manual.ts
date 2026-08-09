@@ -95,6 +95,16 @@ export function frameFileName(imageUrl: string): string {
 }
 
 /**
+ * ZIP の images/ に入れるファイル名。手順番号を前置するのは
+ * (1) 同じフレームを指す手順が複数あるとき、注釈違いの画像が上書きされないようにするため
+ *     （mergeManualSteps が失敗したグループでは同じ imageUrl の手順が複数残る）
+ * (2) 展開したときに images/ が手順順に並ぶため
+ */
+export function stepImageFileName(step: ManualStepWithMeta, index: number): string {
+  return `${String(index + 1).padStart(2, "0")}_${frameFileName(step.imageUrl)}`;
+}
+
+/**
  * 手順を Markdown にする。
  *
  * 画像は同じ ZIP 内の images/ フォルダに配置する前提で、相対パス
@@ -117,7 +127,7 @@ export function toManualMarkdown(input: {
     lines.push(
       `### ${i + 1}. ${step.title}`,
       "",
-      `![手順${i + 1}](images/${frameFileName(step.imageUrl)})`,
+      `![手順${i + 1}](images/${stepImageFileName(step, i)})`,
       "",
       step.description,
       "",

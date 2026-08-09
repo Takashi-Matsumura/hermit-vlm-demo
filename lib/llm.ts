@@ -359,6 +359,85 @@ export async function answerFromFrames(
   return body.choices[0]?.message.content?.trim() ?? "";
 }
 
+/**
+ * スクリーンショット注釈サブエージェント。
+ *
+ * captionOperationFrame が「画面に何があるか」を書かせるのに対し、これは
+ * 「この手順で触る要素はどれか」だけを選ばせる。役割・入出力契約・失敗の扱いを
+ * 他の VLM 呼び出しから切り離してあるので、プロンプトを変えても
+ * 既存の解析パイプラインには一切影響しない。
+ *
+ * temperature を既存の 0.7 ではなく 0.1 にしているのは、これが創作ではなく
+ * 位置の同定（グラウンディング）だから。同じ画面には同じ答えが返ってほしい。
+ *
+ * 戻り値は生のモデル出力（未パース）。妥当性検証は lib/annotation.ts の
+ * parseStepAnnotation が担う（サブエージェントは受け取った答えをそのまま返すだけで、
+ * 「信じてよいか」の判断は呼び出し側の責務にする）。
+ */
+export async function annotateStepTarget(input: {
+  pngBase64: string;
+  title: string;
+  description: string;
+  /** 同じ時刻の captionOperationFrame の結果。画面上の要素名の裏取りに使う */
+  caption?: string;
+  timeoutMs?: number;
+}): Promise<string> {
+  const { pngBase64, title, description, caption, timeoutMs } = input;
+
+  const captionLine = caption ? `この画面の説明（別の解析結果）: ${caption}\n` : "";
+
+  const body = await postJson<ChatResponse>(
+    `${VLM_ENDPOINT}/v1/chat/completions`,
+    {
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "これはPC操作マニュアルの1手順に対応するスクリーンショットです。\n" +
+                "この手順で操作する対象のUI要素を画面から特定し、位置を返してください。\n\n" +
+                `手順のタイトル: 「${title}」\n` +
+                `手順の説明: 「${description}」\n` +
+                captionLine +
+                "\n規則:\n" +
+                "- 座標は、画像の左上を [0,0]、右下を [1000,1000] とする正規化座標で答えてください。\n" +
+                "  bbox_2d は [左, 上, 右, 下] の順の整数4つです。\n" +
+                "  画像の実際のピクセル数（幅や高さ）は使わないでください。必ず0〜1000の範囲です。\n" +
+                "- 枠は操作要素そのもの（ボタン1つ、入力欄1つ、メニュー項目1つ、チェックボックス1つ）に\n" +
+                "  ぴったり合わせてください。ウィンドウ全体・パネル全体・画面の広い領域は囲まないでください。\n" +
+                "- label には、その要素に表示されている文字をそのまま書き写してください。\n" +
+                "  画面に無い文字を作らないでください。文字が無い要素は label を \"\" にしてください。\n" +
+                "- 同じ画面で複数の操作を続けて行う手順のときだけ、操作する順番に最大4個まで並べてください。\n" +
+                "  1つで足りるときは1個だけにしてください。\n" +
+                "- 手順に書かれている要素が画面に見当たらないとき（タイトル画面、説明スライド、\n" +
+                "  デスクトップ、その要素が別の画面にある、など）は、必ず\n" +
+                '  {"found": false, "targets": []} と答えてください。\n' +
+                "  近そうな別の要素で代用しないでください。見当たらないと答えるのは正しい答えです。\n\n" +
+                "JSONオブジェクトだけを出力してください。形式は\n" +
+                '{"found": true, "targets": [{"label": "要素の文字", "kind": "button", "bbox_2d": [120, 640, 210, 668]}]}\n' +
+                "です（この数値は形式の例であり、実際の位置とは無関係です）。\n" +
+                "kind は button / input / dropdown / checkbox / menu / tab / link / other のいずれかです。\n" +
+                "説明文やコードブロックは不要です。",
+            },
+            {
+              type: "image_url",
+              image_url: { url: `data:image/png;base64,${pngBase64}` },
+            },
+          ],
+        },
+      ],
+      max_tokens: 300,
+      temperature: 0.1,
+      top_p: 0.9,
+    },
+    timeoutMs ?? 90_000,
+  );
+
+  return body.choices[0]?.message.content?.trim() ?? "";
+}
+
 /** bge-m3 でテキストをベクトル化する。検索用。 */
 export async function embed(texts: string[]): Promise<number[][]> {
   const body = await postJson<{ data: { embedding: number[] }[] }>(
