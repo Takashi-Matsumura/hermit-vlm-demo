@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
+import JSZip from "jszip";
 
-import { formatTime, toManualMarkdown } from "@/lib/manual";
+import { formatTime, frameFileName, toManualMarkdown } from "@/lib/manual";
 import type { ManualStepWithMeta } from "@/lib/types";
 
 export default function ManualSteps({
@@ -16,23 +17,44 @@ export default function ManualSteps({
   steps: ManualStepWithMeta[];
   onSeek: (time: number) => void;
 }) {
-  const download = useCallback(() => {
-    const base = fileName.replace(/\.[^.]+$/, "") || "manual";
-    const markdown = toManualMarkdown({
-      title: `${base} の操作手順`,
-      summary,
-      steps,
-      origin: window.location.origin,
-    });
+  const [zipping, setZipping] = useState(false);
 
-    const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown;charset=utf-8" }));
-    const a = document.createElement("a");
-    a.href = url;
-    // パスに使えない文字だけ落とす（日本語のファイル名はそのまま残す）
-    a.download = `${base.replace(/[\\/:*?"<>|]/g, "_")}.md`;
-    a.click();
-    // click() の直後に revoke するとダウンロードが始まらないブラウザがあるので1tick待つ
-    setTimeout(() => URL.revokeObjectURL(url), 0);
+  const download = useCallback(async () => {
+    setZipping(true);
+    try {
+      const base = fileName.replace(/\.[^.]+$/, "") || "manual";
+      const markdown = toManualMarkdown({ title: `${base} の操作手順`, summary, steps });
+
+      const zip = new JSZip();
+      zip.file(`${base}.md`, markdown);
+      const images = zip.folder("images");
+
+      // 画像は同一オリジンの /uploads/<id>/frames/*.png なので fetch できる。
+      // 1枚取得に失敗しても他の画像・Markdown本体は諦めずに ZIP に含める。
+      await Promise.all(
+        steps.map(async (step) => {
+          try {
+            const res = await fetch(step.imageUrl);
+            if (!res.ok) throw new Error(`${step.imageUrl} が ${res.status} を返しました`);
+            images?.file(frameFileName(step.imageUrl), await res.blob());
+          } catch (error) {
+            console.error(`[manual] 画像の取得に失敗しました（${step.imageUrl}）:`, error);
+          }
+        }),
+      );
+
+      const blob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      // パスに使えない文字だけ落とす（日本語のファイル名はそのまま残す）
+      a.download = `${base.replace(/[\\/:*?"<>|]/g, "_")}.zip`;
+      a.click();
+      // click() の直後に revoke するとダウンロードが始まらないブラウザがあるので1tick待つ
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } finally {
+      setZipping(false);
+    }
   }, [fileName, steps, summary]);
 
   return (
@@ -41,11 +63,11 @@ export default function ManualSteps({
         <h2 className="text-sm font-medium text-zinc-400">操作手順</h2>
         <button
           type="button"
-          onClick={download}
-          disabled={steps.length === 0}
+          onClick={() => void download()}
+          disabled={steps.length === 0 || zipping}
           className="rounded-lg bg-zinc-100 px-3 py-2 text-sm font-medium text-zinc-900 transition-colors hover:bg-white disabled:opacity-50"
         >
-          Markdownで書き出す
+          {zipping ? "書き出しています…" : "ZIPで書き出す"}
         </button>
       </div>
 

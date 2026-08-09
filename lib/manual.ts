@@ -59,6 +59,29 @@ export function snapToFrameTime(time: number, frameTimes: number[]): number {
   );
 }
 
+/**
+ * 同じフレーム（同じスクリーンショット）にスナップされた手順をまとめる。
+ * 1画面で複数の入力を続けて行う操作では、モデルが別々の手順として返したものが
+ * 同じ PNG を指してしまう（実データで32手順中24手順が9グループに重複した）。
+ *
+ * キーは time ではなく imageUrl。imageUrl は time.toFixed(3) から作られるので
+ * 両者は厳密に等価だが、「同じスクリーンショットならまとめる」という判断基準を
+ * そのままコードに残しておく。
+ *
+ * Map なので配列の離れた位置に同じ imageUrl が現れても1グループにまとまる。
+ * 実際には snapToFrameTime が単調非減少なので、時刻順の入力では重複は必ず隣接する。
+ * グループの並びは最初に出現した順（= 時刻の昇順）。
+ */
+export function groupStepsByFrame(steps: ManualStepWithMeta[]): ManualStepWithMeta[][] {
+  const groups = new Map<string, ManualStepWithMeta[]>();
+  for (const step of steps) {
+    const group = groups.get(step.imageUrl);
+    if (group) group.push(step);
+    else groups.set(step.imageUrl, [step]);
+  }
+  return [...groups.values()];
+}
+
 /** m:ss。app/page.tsx にも同名の関数があるが、既存ファイルは変更しない方針なので共通化していない */
 export function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -66,23 +89,24 @@ export function formatTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+/** imageUrl（例: /uploads/<id>/frames/f_22.000.png）から末尾のファイル名だけを取り出す */
+export function frameFileName(imageUrl: string): string {
+  return imageUrl.split("/").pop() ?? imageUrl;
+}
+
 /**
  * 手順を Markdown にする。
  *
- * 画像は /uploads/<id>/frames/*.png というこのアプリ内のパスなので、
- * 書き出した .md 単体では画像が表示されない（このデモを動かしているサーバが
- * 生きている間だけ解決する）。README の「localhost で1人が使うデモとして
- * 作ってある」という前提のとおり、画像ごと持ち出せる形にはしていない。
- * origin を渡すと http://localhost:3000/... の絶対URLになり、
- * ローカルで開いている限りはプレビューできる。
+ * 画像は同じ ZIP 内の images/ フォルダに配置する前提で、相対パス
+ * `images/<ファイル名>` で参照する（サーバの絶対URLには依存しない。
+ * ZIP を展開してどこに置いても、フォルダ構成ごと壊さなければ画像が表示される）。
  */
 export function toManualMarkdown(input: {
   title: string;
   summary: string;
   steps: ManualStepWithMeta[];
-  origin?: string;
 }): string {
-  const { title, summary, steps, origin = "" } = input;
+  const { title, summary, steps } = input;
 
   const lines: string[] = [`# ${title}`, "", "> この手順書は動画から自動生成されたものです。内容は必ず確認してください。", ""];
 
@@ -93,7 +117,7 @@ export function toManualMarkdown(input: {
     lines.push(
       `### ${i + 1}. ${step.title}`,
       "",
-      `![手順${i + 1}](${origin}${step.imageUrl})`,
+      `![手順${i + 1}](images/${frameFileName(step.imageUrl)})`,
       "",
       step.description,
       "",

@@ -237,6 +237,66 @@ export async function generateManualSteps(
   }
 }
 
+/**
+ * 同じフレームにスナップされた複数の手順を、1つの手順に合成する。
+ * 1画面で続けて行う入力操作を別々の手順として並べると、同じスクリーンショットが
+ * 何枚も続く読みにくい手順書になるため、後処理として文章ごとまとめる。
+ * 機械的に連結するのではなくモデルに書き直させるのは、「〜を入力します」の羅列を
+ * 1つの自然な文にするため。
+ *
+ * generateManualSteps と同じく、パースに失敗したら機械的な連結にフォールバックする
+ * （合成できなくても、元の手順の情報は落とさない）。
+ */
+export async function mergeManualSteps(
+  steps: ManualStep[],
+): Promise<Pick<ManualStep, "title" | "description">> {
+  const list = steps.map((s, i) => `${i + 1}. ${s.title}\n   ${s.description}`).join("\n");
+
+  const raw = await chat(
+    `以下は、PCの操作画面を録画した動画から自動生成した操作手順です。` +
+      `すべて同じ画面（同じスクリーンショット）に対する操作なので、1つの手順にまとめてください。\n\n` +
+      `${list}\n\n` +
+      `title は、この画面でまとめて行う操作が分かる短い命令形（30文字以内）にしてください。` +
+      `必ず「〜する」で終わる形にし、体言止めにはしないでください。\n` +
+      `description は1〜4文で、上の手順を書かれている順につないだ自然な文章にしてください。` +
+      `箇条書きにはしないでください。\n` +
+      `上の手順に書かれている画面上の名前や数値だけを使い、` +
+      `書かれていない名前や数値を推測して補わないでください。\n` +
+      `上の手順のどれも省略しないでください。注意や確認だけの項目も残してください。\n` +
+      `JSONオブジェクトだけを出力してください。形式は ` +
+      `{"title": "手順のタイトル", "description": "手順の説明"} です。` +
+      `説明文やコードブロックは不要です。`,
+    300,
+  );
+
+  try {
+    // モデルが```jsonフェンスや前置きを付けることがあるのでオブジェクト部分だけ取り出す
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error("JSONオブジェクトが見つかりません");
+
+    const parsed: unknown = JSON.parse(match[0]);
+    if (typeof parsed !== "object" || parsed === null) throw new Error("オブジェクトではありません");
+
+    const { title, description } = parsed as Partial<ManualStep>;
+    if (typeof title !== "string" || typeof description !== "string") {
+      throw new Error("title / description がありません");
+    }
+    if (title.trim().length === 0) throw new Error("title が空です");
+
+    return { title: title.trim(), description: description.trim() };
+  } catch {
+    return concatManualSteps(steps);
+  }
+}
+
+/** 合成に失敗したときの機械的な連結。情報は落とさないが読みやすさは諦める */
+function concatManualSteps(steps: ManualStep[]): Pick<ManualStep, "title" | "description"> {
+  return {
+    title: steps.map((s) => s.title).join("、"),
+    description: steps.map((s) => s.description).join(" "),
+  };
+}
+
 /** シーン説明のテキストだけでは答えられないとき、gemma にこの合図を出させる */
 export const NEED_IMAGE_SENTINEL = "NEED_IMAGE";
 
