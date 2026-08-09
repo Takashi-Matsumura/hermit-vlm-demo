@@ -105,7 +105,7 @@ curl -N -X POST http://localhost:3000/api/manual/annotate \
   -d '{"id":"<解析結果のuuid>"}'
 ```
 
-手順ごとに `annotation` イベントが SSE で流れる。`annotation: null` は棄却（`reason` を参照）。操作対象が画面に写っている手順では赤い矩形の `bbox_2d` が、写っていない手順（タイトルスライドなど）では `not_found` が返れば正常。
+`round-start` → 手順ごとの `annotation`（その時点での最良の注釈。`annotation: null` は棄却で `reason` を参照）→ `round-done` が最大3周（`MANUAL_ANNOTATE_ROUNDS`）流れ、最後に `done` で終わる。操作対象が画面に写っている手順では赤い矩形の `bbox_2d` が、写っていない手順（タイトルスライドなど）では `not_found` が返れば正常。1周目は黒帯除去済みの全体画像、2周目以降は対象周辺を拡大した crop 画像で位置を絞り込む。実データ（6件）で誤差中央値 47.8px → 8.3px、誤差20px以内が0/6 → 6/6 まで改善した。
 
 `done` イベントの直後は、注釈より先にスクリーンショット検証サブエージェントが自動で走る。UI を経由せず単独で試すには:
 
@@ -134,12 +134,12 @@ app/
   api/manual/verify/route.ts   スクリーンショット検証サブエージェントのエンドポイント
   api/manual/annotate/route.ts スクリーンショット注釈サブエージェントのエンドポイント
 lib/
-  llm.ts                 llama-server 3系統のクライアント（annotateStepTarget / verifyStepScreenshot を含む）
-  video.ts                ffmpeg / ffprobe ラッパー
+  llm.ts                 llama-server 3系統のクライアント（annotateStepTarget / refineStepTarget / verifyStepScreenshot を含む）
+  video.ts                ffmpeg / ffprobe ラッパー（レターボックス検出 detectContentRect / crop拡大 cropFramePng を含む）
   audio.ts                whisper.cpp による音声の文字起こし
   analysis.ts             result.json のロードとベクトル検索（search / ask 共通）
   manual.ts                操作マニュアル用の純粋関数（フレーム時刻マージ・同一フレーム手順のグループ化・Markdown生成）
-  annotation.ts            注釈サブエージェントの純粋関数（応答のパース・妥当性検証・座標の幾何計算）
+  annotation.ts            注釈サブエージェントの純粋関数（応答のパース・妥当性検証・座標の幾何計算・crop-and-zoomのviewport変換）
   verification.ts          検証サブエージェントの純粋関数（候補時刻の選定・応答のパース）
   concurrency.ts            ワーカープール方式の並列実行ヘルパー（annotate / verify 共通）
   sse.ts                   SSE読み取りの汎用ヘルパー（/manual 用）
@@ -180,10 +180,14 @@ verify: 手順の説明文と現在のスクリーンショットが食い違っ
         → 3周しても合わなければ verification.needsReview = true を付けて確定
         → SSE で1手順ずつ返しつつ、result.json に書き戻す
 
-annotate: 手順ごとに Qwen3-VL へ「この手順で操作する対象はどれか」を問い、
-     正規化座標([0,1000])でバウンディングボックスを受け取る（3並列）
+annotate: 動画のレターボックス（左右黒帯）を cropdetect で検出（初回のみ、以降は result.json にキャッシュ）
+     → 1周目: 黒帯除去済みの全体画像で Qwen3-VL に「この手順で操作する対象はどれか」を問い、
+       正規化座標([0,1000])でバウンディングボックスを受け取る（3並列）
+     → 2〜3周目: 前周の対象周辺を ffmpeg で切り出し拡大した画像で位置を絞り込む（crop-and-zoom）。
+       拡大しすぎて枠が退化する・中心が飛ぶといった精緻化は受理せず前周の枠を維持する
+     → 収束したら早期確定、そうでなければ次周へ（3周目は「同倍率で中心を取り直す確認パス」）
      → 妥当性検証（範囲外・退化・巨大すぎる枠は描かずに棄却）を通った枠だけ採用
-     → SSE で1手順ずつ返しつつ、result.json に書き戻す（一時ファイル + rename でアトミックに）
+     → SSE で周回ごとに返しつつ、result.json に書き戻す（一時ファイル + rename でアトミックに）
 ```
 
 ## 実測性能
@@ -210,6 +214,8 @@ MacBook Air M5 (32GB) での計測値:
 - **`/manual` の result.json は `AnalysisResult` のスーパーセット。** `steps` フィールドが増えているだけなので、`/api/search`・`/api/ask` は無変更で動く。この設計により `/manual` にも既存の Q&A チャットとシーン検索がそのまま使える。
 - **`/manual` は同じフレームにスナップされた手順を1つに統合する。** 1画面で続けて入力する操作（住所・電話番号・郵便番号など）をモデルは別々の手順として返すが、`time` をフレームに寄せると同じスクリーンショットを指してしまう。実測（日本郵政の操作説明動画、460秒・24フレーム）で32手順中24手順が9グループに重なった（統合後17手順）。統合は gemma への追加呼び出し（グループ数ぶん、並行実行で実測19秒）で、失敗したグループは統合前のまま残す。
 - **スクリーンショット注釈サブエージェント（`/api/manual/annotate`）は Qwen3-VL の正規化座標 [0,1000] をそのまま `result.json` に保存する。** ピクセルに直さずに保存するので、フレーム PNG を別解像度で作り直しても注釈は壊れない。ピクセルへの変換は `lib/annotation.ts` の `annotationGeometry` 1箇所に集約してあり、画面表示（SVG オーバーレイ）と ZIP エクスポート（Canvas 焼き込み）の両方がここを経由するので、表示とエクスポートで枠の位置がずれることはない。
+- **黒帯除去・crop-and-zoomは「VLMに見せた領域（viewport）」という統一概念で扱う。** viewport は動画フレーム全体を [0,1000] とする正規化座標で表す矩形で、1周目は `contentBox`（cropdetect で検出したレターボックス除去後の領域。黒帯が無ければ全画面）、2〜3周目は前周の枠周辺を拡大した領域になる。crop画像内でVLMが返すローカル座標は `toGlobalBox` で必ず全体座標へ逆変換してから保存するため、`AnnotationTarget.box` はどの周でも全体フレーム基準のままで、`AnnotatedFrame.tsx`・`bakeAnnotatedPng.ts` は無改修で動く。**保存されるフレーム PNG は黒帯付きのまま変更しない**（黒帯除去は VLM への入力変換であって成果物の変換ではない）。
+- **3周目の「さらに拡大」は実測で悪化することを確認したため、同倍率で中心を取り直す確認パスにしてある。** 拡大しすぎると要素の一部だけを返す・切り出し領域全体を返すといった退化が起きる。`isPlausibleRefinement`（前周比で面積比0.4〜2.5倍・中心移動が対角長の1.5倍以内）で受理判定し、外れた精緻化は前周の枠を維持したまま周回を打ち切る。収束判定は周回間の IoU ではなく中心移動量（`hasConverged`）で行う。ズームで枠が締まるほど IoU が構造的に下がり、収束の指標として使えないことを実測で確認したため。
 - **誤った枠を描くくらいなら描かない、を検証の基本方針にしている。** Qwen3-VL は対象が画面に無くても「見つけた」と答えがちなので、`found` が厳密に `true` の場合だけを信用し、範囲外座標・退化した枠（8px未満）・巨大すぎる枠（面積比15%超）はクランプせずに棄却する。実測では手順文とスナップ先フレームが食い違うケース（「終了」ボタンに言及する手順文に対し、実際のフレームには存在しない）でも、モデルは画面に実在する別の要素を選ぶか `found: false` を返し、存在しない要素の枠を捏造することはなかった。
 - **注釈の焼き込みはクライアント（ブラウザ）側で行い、サーバに画像処理ライブラリを足していない。** sharp の SVG composite は Pango/fontconfig 依存で、フォント解決に失敗すると番号バッジの文字が黙って消える（ffmpeg にも drawtext=freetype が無く代替できない）。ブラウザの Canvas ならフォントが確実に使える。
 - **`/api/manual/annotate` は既存の `result.json` を書き換える。** 解析（analyze）は新規作成だが、注釈は数分かけて作った既存ファイルの破壊的更新になるため、一時ファイルに書いてから `rename` でアトミックに置き換える。
@@ -238,12 +244,12 @@ MacBook Air M5 (32GB) での計測値:
 
 | サブエージェントの性質 | 注釈（annotate） | 検証（verify） |
 | --- | --- | --- |
-| 専用の役割プロンプト | `annotateStepTarget`（`lib/llm.ts`）。「画面に何があるか」を書かせる `captionOperationFrame` とは別プロンプト | `verifyStepScreenshot`（`lib/llm.ts`）。「現在の画像+候補」から最も説明に合うものを選ばせる |
-| 独立した入出力契約 | `StepAnnotation` 型と `parseStepAnnotation`（`lib/annotation.ts`） | `parseVerification`（`lib/verification.ts`）。呼び出し元は生のモデル出力を直接は見ない |
-| 個別失敗の隔離 | 1手順の失敗は `null` になるだけで、他の手順の処理は止まらない | 1手順の失敗は現状維持のまま次周に持ち越すか `needsReview` になるだけ |
+| 専用の役割プロンプト | `annotateStepTarget`（1周目）/ `refineStepTarget`（2〜3周目、「前回の推定は合っているか」を確認させる別プロンプト）。いずれも `lib/llm.ts`。「画面に何があるか」を書かせる `captionOperationFrame` とも別プロンプト | `verifyStepScreenshot`（`lib/llm.ts`）。「現在の画像+候補」から最も説明に合うものを選ばせる |
+| 独立した入出力契約 | `StepAnnotation` 型と `parseStepAnnotation`（`lib/annotation.ts`）。viewport（VLMに見せた領域）を引数に取り、ローカル座標を全体座標へ逆変換してから返す | `parseVerification`（`lib/verification.ts`）。呼び出し元は生のモデル出力を直接は見ない |
+| 個別失敗の隔離 | 1手順の失敗は `null` になるだけで、他の手順の処理は止まらない。周回途中の失敗は前周の枠を維持する | 1手順の失敗は現状維持のまま次周に持ち越すか `needsReview` になるだけ |
 | 並列実行 | `MANUAL_ANNOTATE_CONCURRENCY`（既定3） | `MANUAL_VERIFY_CONCURRENCY`（既定2。画像を複数枚同時に送るぶん1リクエストが重いため） |
 | 親からの分離 | 手順を生成する gemma は注釈の存在を知らない。解析とは別エンドポイント・別 SSE の後段ステージ | 同左。さらに annotate 自身からも独立しており、annotate の前段ステージとして動く |
-| 観測可能性 | 採用・棄却の結果が理由（`reason`）つきで1手順ずつ SSE に流れる | 周回ごとの差し替え件数・残件数が SSE に流れる。「検出→修正→再検出」を最大3周繰り返す様子がそのまま進捗になる |
+| 観測可能性 | 周回ごとの採用・棄却の結果が理由（`reason`）つきで1手順ずつ SSE に流れる。「粗い検出→拡大して精緻化」を最大3周（`MANUAL_ANNOTATE_ROUNDS`）繰り返し、収束すれば早期確定する様子がそのまま進捗になる | 周回ごとの差し替え件数・残件数が SSE に流れる。「検出→修正→再検出」を最大3周繰り返す様子がそのまま進捗になる |
 
 両方とも `lib/concurrency.ts` の `mapWithConcurrency`（ワーカープール）を共有している。
 

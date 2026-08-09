@@ -96,6 +96,9 @@ export type ManualStep = {
  */
 export type NormalizedBox = { x1: number; y1: number; x2: number; y2: number };
 
+/** 画像内の実ピクセル矩形。ffmpeg の crop=W:H:X:Y にそのまま対応する */
+export type PixelRect = { x: number; y: number; width: number; height: number };
+
 /** 注釈サブエージェントが特定した、手順で操作する対象1件 */
 export type AnnotationTarget = {
   /** その要素に表示されている文字（「印刷」など）。文字が無い要素では空文字 */
@@ -103,6 +106,11 @@ export type AnnotationTarget = {
   /** button / input / dropdown / checkbox / menu / tab / link / other */
   kind: string;
   box: NormalizedBox;
+  /**
+   * crop-and-zoom の何周目で確定したか（1〜3）。省略時は旧データ
+   * （3周ループ導入前に1回の呼び出しだけで確定した注釈）を意味する。
+   */
+  refinedAtRound?: number;
 };
 
 /** スクリーンショット注釈サブエージェントの出力。1手順ぶん */
@@ -148,6 +156,13 @@ export type ManualStepWithMeta = ManualStep & {
  */
 export type ManualResult = AnalysisResult & {
   steps: ManualStepWithMeta[];
+  /**
+   * レターボックス（画面録画の左右黒帯）を除いた実コンテンツ領域。
+   * 動画フレーム全体を [0,1000] とする正規化座標。黒帯が無い動画では undefined。
+   * 注釈サブエージェントが cropdetect の検出結果をここにキャッシュし、
+   * 「注釈をやり直す」際に ffmpeg での再検出を省略できるようにする。
+   */
+  contentBox?: NormalizedBox;
 };
 
 /**
@@ -187,16 +202,24 @@ export type ManualAnalyzeEvent =
  * 片方を変えてももう片方の解析パイプラインに影響しない）。
  */
 export type ManualAnnotateEvent =
-  | { type: "start"; total: number }
+  | { type: "start"; total: number; rounds: number }
+  | { type: "round-start"; round: number; targets: number }
   | {
       type: "annotation";
+      /** crop-and-zoom の何周目でこのイベントが送られたか */
+      round: number;
       /** steps 配列の添字。並列実行なので順不同で届く。突合はこれで行う（time ではない） */
       index: number;
       time: number;
+      /**
+       * その時点での最良の注釈。周回途中でも常に「今いちばん信用できる状態」を送る
+       * （N周目が found:false でも、1周目で確定した正しい枠を null で上書きしない）。
+       */
       annotation: StepAnnotation | null;
       /** annotation が null のときだけ入る。棄却理由を可視化するためのもの */
       reason?: "no_json" | "not_found" | "no_valid_target" | "failed";
     }
+  | { type: "round-done"; round: number; annotated: number; remaining: number }
   | { type: "done"; annotated: number }
   | { type: "error"; message: string };
 

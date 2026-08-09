@@ -380,11 +380,19 @@ export async function annotateStepTarget(input: {
   description: string;
   /** 同じ時刻の captionOperationFrame の結果。画面上の要素名の裏取りに使う */
   caption?: string;
+  /**
+   * レターボックス（黒帯）を除いた画像を渡す場合は true。
+   * プロンプトの先頭に「黒い余白を取り除いた画像である」という1行を足す。
+   */
+  cropped?: boolean;
   timeoutMs?: number;
 }): Promise<string> {
-  const { pngBase64, title, description, caption, timeoutMs } = input;
+  const { pngBase64, title, description, caption, cropped, timeoutMs } = input;
 
   const captionLine = caption ? `この画面の説明（別の解析結果）: ${caption}\n` : "";
+  const croppedLine = cropped
+    ? "この画像は、画面録画の黒い余白を取り除いた部分だけを切り出したものです。\n"
+    : "";
 
   const body = await postJson<ChatResponse>(
     `${VLM_ENDPOINT}/v1/chat/completions`,
@@ -397,12 +405,14 @@ export async function annotateStepTarget(input: {
               type: "text",
               text:
                 "これはPC操作マニュアルの1手順に対応するスクリーンショットです。\n" +
+                croppedLine +
                 "この手順で操作する対象のUI要素を画面から特定し、位置を返してください。\n\n" +
                 `手順のタイトル: 「${title}」\n` +
                 `手順の説明: 「${description}」\n` +
                 captionLine +
                 "\n規則:\n" +
-                "- 座標は、画像の左上を [0,0]、右下を [1000,1000] とする正規化座標で答えてください。\n" +
+                "- 座標は、いま見えているこの画像の左上を [0,0]、右下を [1000,1000] とする\n" +
+                "  正規化座標で答えてください。元の画面全体での位置に直す必要はありません。\n" +
                 "  bbox_2d は [左, 上, 右, 下] の順の整数4つです。\n" +
                 "  画像の実際のピクセル数（幅や高さ）は使わないでください。必ず0〜1000の範囲です。\n" +
                 "- 枠は操作要素そのもの（ボタン1つ、入力欄1つ、メニュー項目1つ、チェックボックス1つ）に\n" +
@@ -415,6 +425,78 @@ export async function annotateStepTarget(input: {
                 "  デスクトップ、その要素が別の画面にある、など）は、必ず\n" +
                 '  {"found": false, "targets": []} と答えてください。\n' +
                 "  近そうな別の要素で代用しないでください。見当たらないと答えるのは正しい答えです。\n\n" +
+                "JSONオブジェクトだけを出力してください。形式は\n" +
+                '{"found": true, "targets": [{"label": "要素の文字", "kind": "button", "bbox_2d": [120, 640, 210, 668]}]}\n' +
+                "です（この数値は形式の例であり、実際の位置とは無関係です）。\n" +
+                "kind は button / input / dropdown / checkbox / menu / tab / link / other のいずれかです。\n" +
+                "説明文やコードブロックは不要です。",
+            },
+            {
+              type: "image_url",
+              image_url: { url: `data:image/png;base64,${pngBase64}` },
+            },
+          ],
+        },
+      ],
+      max_tokens: 300,
+      temperature: 0.1,
+      top_p: 0.9,
+    },
+    timeoutMs ?? 90_000,
+  );
+
+  return body.choices[0]?.message.content?.trim() ?? "";
+}
+
+/**
+ * crop-and-zoom の2周目以降に使う注釈サブエージェント。
+ *
+ * annotateStepTarget が画面全体（または黒帯除去のみ）から粗く位置を当てるのに対し、
+ * これは前周の box 周辺を拡大した画像から位置を絞り込む。出力スキーマは
+ * annotateStepTarget と同一にしてあり、parseStepAnnotation をそのまま共有できる。
+ *
+ * 「前回の推定」を伝えて確認・訂正させるのが annotateStepTarget との違い。
+ * 実測で、隣接する別要素（入力欄と隣のボタンなど）を取り違えていたケースが
+ * この一言で正しく選び直されることを確認している。
+ */
+export async function refineStepTarget(input: {
+  pngBase64: string;
+  title: string;
+  description: string;
+  previousLabel: string;
+  timeoutMs?: number;
+}): Promise<string> {
+  const { pngBase64, title, description, previousLabel, timeoutMs } = input;
+
+  const previousLine = previousLabel
+    ? `前回の推定では「${previousLabel}」を指しました。合っているか確認し、違えば選び直してください。\n`
+    : "";
+
+  const body = await postJson<ChatResponse>(
+    `${VLM_ENDPOINT}/v1/chat/completions`,
+    {
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "これはPC操作マニュアルの1手順の画面から、対象付近だけを切り出して拡大した画像です。\n" +
+                "この拡大画像の中から、この手順で操作する要素を1つだけ選び、位置を返してください。\n\n" +
+                `手順のタイトル: 「${title}」\n` +
+                `手順の説明: 「${description}」\n` +
+                previousLine +
+                "隣接する別のボタンや入力欄と取り違えないよう、要素に書かれている文字を読んでから決めてください。\n\n" +
+                "規則:\n" +
+                "- 座標は、いま見えているこの拡大画像の左上を [0,0]、右下を [1000,1000] とする\n" +
+                "  正規化座標で答えてください。元の画面全体での位置に直す必要はありません。\n" +
+                "  bbox_2d は [左, 上, 右, 下] の順の整数4つです。必ず0〜1000の範囲です。\n" +
+                "- 枠は操作要素そのものにぴったり合わせてください。切り出した領域全体を囲まないでください。\n" +
+                "- label には、その要素に表示されている文字をそのまま書き写してください。\n" +
+                "  画面に無い文字を作らないでください。文字が無い要素は label を \"\" にしてください。\n" +
+                "- この拡大画像の中に対象が写っていないときは、必ず\n" +
+                '  {"found": false, "targets": []} と答えてください。近そうな別の要素で代用しないでください。\n\n' +
                 "JSONオブジェクトだけを出力してください。形式は\n" +
                 '{"found": true, "targets": [{"label": "要素の文字", "kind": "button", "bbox_2d": [120, 640, 210, 668]}]}\n' +
                 "です（この数値は形式の例であり、実際の位置とは無関係です）。\n" +

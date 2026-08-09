@@ -7,6 +7,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
+import type { PixelRect } from "@/lib/types";
+
 const run = promisify(execFile);
 
 const SCENE_THRESHOLD = Number(process.env.SCENE_THRESHOLD ?? "0.2");
@@ -17,6 +19,8 @@ const MIN_SCENE_FRAMES = Number(process.env.MIN_SCENE_FRAMES ?? "3");
 const INTERVAL_SECONDS = Number(process.env.INTERVAL_SECONDS ?? "10");
 /** 抽出フレームの最大幅。VLM の prompt トークン数と処理時間に直結する */
 const FRAME_MAX_WIDTH = Number(process.env.FRAME_MAX_WIDTH ?? "1600");
+/** cropdetect の輝度しきい値。24 は ffmpeg の既定値 */
+const CROPDETECT_LIMIT = Number(process.env.CROPDETECT_LIMIT ?? "24");
 
 export type VideoInfo = { duration: number; width: number; height: number };
 
@@ -129,4 +133,90 @@ export async function extractFrame(
     "-update", "1",
     outPath,
   ]);
+}
+
+type CropDetectFrame = {
+  tags?: {
+    "lavfi.cropdetect.w"?: string;
+    "lavfi.cropdetect.h"?: string;
+    "lavfi.cropdetect.x"?: string;
+    "lavfi.cropdetect.y"?: string;
+  };
+};
+
+/**
+ * 画面録画の左右（または上下）の黒帯（レターボックス）を検出する。
+ * 注釈サブエージェント（/api/manual/annotate）が、VLM に渡す前にこの領域だけへ
+ * トリミングすることで、黒帯ぶんの画素をグラウンディングの精度低下に繋げないようにする。
+ *
+ * fps=1 に間引いてから cropdetect に通すことで負荷を抑える
+ * （デコード自体は全フレーム走るが、実測 460秒/13787フレームの動画で 1.36秒）。
+ * reset=0 なので最後のタグ付きフレームが動画全体の累積結果になる
+ * （暗い/フェードインするフレームで一時的に誤検出しても、明るいフレームが
+ * 1枚あれば最終的に正しい値に上書きされる）。
+ *
+ * 黒帯が無い、または検出に失敗した場合は null を返す。呼び出し側は
+ * 「黒帯除去なしで従来どおり動く」にフォールバックすること
+ * （精度改善のための最適化であって、これが失敗しても注釈処理自体は止めるべきではない）。
+ */
+export async function detectContentRect(videoPath: string): Promise<PixelRect | null> {
+  let stdout: string;
+  try {
+    ({ stdout } = await run("ffprobe", [
+      "-v", "error",
+      "-f", "lavfi",
+      `movie=${escapeForLavfi(videoPath)},fps=1,cropdetect=limit=${CROPDETECT_LIMIT}:round=2:reset=0`,
+      "-show_entries", "frame_tags=lavfi.cropdetect.w,lavfi.cropdetect.h,lavfi.cropdetect.x,lavfi.cropdetect.y",
+      "-of", "json",
+    ], { maxBuffer: 32 * 1024 * 1024 }));
+  } catch (error) {
+    console.error("[video] cropdetect の実行に失敗しました:", error);
+    return null;
+  }
+
+  let parsed: { frames?: CropDetectFrame[] };
+  try {
+    parsed = JSON.parse(stdout) as { frames?: CropDetectFrame[] };
+  } catch {
+    return null;
+  }
+
+  // -of csv は列順がタグ順ではなく内部順になるため使わない（json なら key で引ける）。
+  // 末尾から探すのは、reset=0 の累積結果が最後のタグ付きフレームに乗っているため。
+  const frames = parsed.frames ?? [];
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const tags = frames[i].tags;
+    if (!tags) continue;
+    const w = Number(tags["lavfi.cropdetect.w"]);
+    const h = Number(tags["lavfi.cropdetect.h"]);
+    const x = Number(tags["lavfi.cropdetect.x"]);
+    const y = Number(tags["lavfi.cropdetect.y"]);
+    if (![w, h, x, y].every((n) => Number.isFinite(n))) continue;
+    return { x, y, width: w, height: h };
+  }
+  return null;
+}
+
+/**
+ * フレーム PNG の一部を切り出して拡大し、PNG のまま標準出力で受け取る。
+ * 元動画へシークし直さないのは、フレーム PNG が既に取りうる最大解像度
+ * （FRAME_MAX_WIDTH 上限。この素材では等倍）を持っているため。
+ * 中間ファイルを作らないので、注釈サブエージェントの並列実行と競合しない。
+ * ffmpeg は freetype 無しビルドだが、crop/scale は文字を描かないので影響しない。
+ */
+export async function cropFramePng(
+  pngPath: string,
+  rect: PixelRect,
+  targetWidth: number,
+): Promise<Buffer> {
+  const { stdout } = await run("ffmpeg", [
+    "-v", "error",
+    "-i", pngPath,
+    "-vf", `crop=${rect.width}:${rect.height}:${rect.x}:${rect.y},scale=${targetWidth}:-2:flags=lanczos`,
+    "-frames:v", "1",
+    "-f", "image2pipe",
+    "-vcodec", "png",
+    "-",
+  ], { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 });
+  return stdout;
 }
