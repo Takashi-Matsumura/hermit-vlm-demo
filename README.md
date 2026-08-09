@@ -97,6 +97,16 @@ curl -O https://upload.wikimedia.org/wikipedia/commons/1/1c/Wikipedia_video_tuto
   で音声つきサンプルを作れる。発話3つに対しフレームが3枚増え、手順が3つ生成されれば正常
 - 実際の画面録画は `Cmd+Shift+5` で内蔵マイクを選び、操作を声に出しながら録画する
 
+解析（`done`）の直後に注釈サブエージェントが自動で走る。UI を経由せず単独で試すには:
+
+```bash
+curl -N -X POST http://localhost:3000/api/manual/annotate \
+  -H 'content-type: application/json' \
+  -d '{"id":"<解析結果のuuid>"}'
+```
+
+手順ごとに `annotation` イベントが SSE で流れる。`annotation: null` は棄却（`reason` を参照）。操作対象が画面に写っている手順では赤い矩形の `bbox_2d` が、写っていない手順（タイトルスライドなど）では `not_found` が返れば正常。
+
 ## 構成
 
 ```
@@ -108,13 +118,17 @@ app/
   manual/page.tsx              操作マニュアル自動生成のUI
   manual/ManualSteps.tsx       手順一覧 + ZIPエクスポート（Markdown + スクリーンショット）
   manual/QaChat.tsx            手順に質問するチャット（/api/ask を再利用）
+  manual/AnnotatedFrame.tsx    スクリーンショットに赤枠・番号バッジを重ねる SVG オーバーレイ
+  manual/bakeAnnotatedPng.ts   注釈を Canvas で PNG に焼き込む（ZIP エクスポート用）
   api/manual/analyze/route.ts  操作マニュアル用の解析エンドポイント
+  api/manual/annotate/route.ts スクリーンショット注釈サブエージェントのエンドポイント
 lib/
-  llm.ts                 llama-server 3系統のクライアント
+  llm.ts                 llama-server 3系統のクライアント（注釈サブエージェント annotateStepTarget を含む）
   video.ts                ffmpeg / ffprobe ラッパー
   audio.ts                whisper.cpp による音声の文字起こし
   analysis.ts             result.json のロードとベクトル検索（search / ask 共通）
   manual.ts                操作マニュアル用の純粋関数（フレーム時刻マージ・同一フレーム手順のグループ化・Markdown生成）
+  annotation.ts            注釈サブエージェントの純粋関数（応答のパース・妥当性検証・座標の幾何計算）
   sse.ts                   SSE読み取りの汎用ヘルパー（/manual 用）
   types.ts                 サーバ・クライアント共有の型
 samples/                動作確認用のサンプル動画とその生成スクリプト
@@ -142,6 +156,12 @@ samples/                動作確認用のサンプル動画とその生成ス�
      → 同じフレームにスナップされた手順を gemma-4-12b が1手順に合成（同じ画面での連続操作をまとめる）
      → steps から章(chapters)を導出、bge-m3 でベクトル化して result.json に保存
        （result.json の形は AnalysisResult のスーパーセットなので /api/ask・/api/search は無変更で動く）
+
+done イベントの直後、クライアントが /api/manual/annotate を自動起動する:
+     手順ごとに Qwen3-VL へ「この手順で操作する対象はどれか」を問い、
+     正規化座標([0,1000])でバウンディングボックスを受け取る（3並列）
+     → 妥当性検証（範囲外・退化・巨大すぎる枠は描かずに棄却）を通った枠だけ採用
+     → SSE で1手順ずつ返しつつ、result.json に書き戻す（一時ファイル + rename でアトミックに）
 ```
 
 ## 実測性能
@@ -166,6 +186,23 @@ MacBook Air M5 (32GB) での計測値:
 - **`/manual` は発話区切れ目もフレーム抽出時刻に使う。** 画面録画はシーン検出がほとんど機能しないため（上記）、「発話の切れ目 ≒ 1操作ステップ」という仮説で補っている。上限は `MANUAL_MAX_FRAMES`（既定24、`MAX_FRAMES` とは独立）。手順が機械的（1フレーム=1手順）になっている場合は、キャプション枚数と発話件数が多すぎて `generateManualSteps` の gemma 呼び出しがコンテキスト長を超え、静かにフォールバックしている可能性が高い。
 - **`/manual` の result.json は `AnalysisResult` のスーパーセット。** `steps` フィールドが増えているだけなので、`/api/search`・`/api/ask` は無変更で動く。この設計により `/manual` にも既存の Q&A チャットとシーン検索がそのまま使える。
 - **`/manual` は同じフレームにスナップされた手順を1つに統合する。** 1画面で続けて入力する操作（住所・電話番号・郵便番号など）をモデルは別々の手順として返すが、`time` をフレームに寄せると同じスクリーンショットを指してしまう。実測（日本郵政の操作説明動画、460秒・24フレーム）で32手順中24手順が9グループに重なった（統合後17手順）。統合は gemma への追加呼び出し（グループ数ぶん、並行実行で実測19秒）で、失敗したグループは統合前のまま残す。
+- **スクリーンショット注釈サブエージェント（`/api/manual/annotate`）は Qwen3-VL の正規化座標 [0,1000] をそのまま `result.json` に保存する。** ピクセルに直さずに保存するので、フレーム PNG を別解像度で作り直しても注釈は壊れない。ピクセルへの変換は `lib/annotation.ts` の `annotationGeometry` 1箇所に集約してあり、画面表示（SVG オーバーレイ）と ZIP エクスポート（Canvas 焼き込み）の両方がここを経由するので、表示とエクスポートで枠の位置がずれることはない。
+- **誤った枠を描くくらいなら描かない、を検証の基本方針にしている。** Qwen3-VL は対象が画面に無くても「見つけた」と答えがちなので、`found` が厳密に `true` の場合だけを信用し、範囲外座標・退化した枠（8px未満）・巨大すぎる枠（面積比15%超）はクランプせずに棄却する。実測では手順文とスナップ先フレームが食い違うケース（「終了」ボタンに言及する手順文に対し、実際のフレームには存在しない）でも、モデルは画面に実在する別の要素を選ぶか `found: false` を返し、存在しない要素の枠を捏造することはなかった。
+- **注釈の焼き込みはクライアント（ブラウザ）側で行い、サーバに画像処理ライブラリを足していない。** sharp の SVG composite は Pango/fontconfig 依存で、フォント解決に失敗すると番号バッジの文字が黙って消える（ffmpeg にも drawtext=freetype が無く代替できない）。ブラウザの Canvas ならフォントが確実に使える。
+- **`/api/manual/annotate` は既存の `result.json` を書き換える。** 解析（analyze）は新規作成だが、注釈は数分かけて作った既存ファイルの破壊的更新になるため、一時ファイルに書いてから `rename` でアトミックに置き換える。
+
+## スクリーンショット注釈サブエージェント
+
+`/api/manual/annotate` は、Claude Code の「サブエージェント」（専用の役割を持ち、独立した入出力契約で動き、結果だけを親に返す仕組み）と同じ考え方をこのアプリの中で実装したもの。
+
+| サブエージェントの性質 | このアプリでの実装 |
+| --- | --- |
+| 専用の役割プロンプト | `annotateStepTarget`（`lib/llm.ts`）1関数に閉じている。「画面に何があるか」を書かせる `captionOperationFrame` とは別プロンプト |
+| 独立した入出力契約 | `StepAnnotation` 型と `parseStepAnnotation`（`lib/annotation.ts`）が唯一の受け口。呼び出し元は生のモデル出力を直接は見ない |
+| 個別失敗の隔離 | 1手順の失敗（パース失敗・棄却・例外）は `null` になるだけで、他の手順の処理は止まらない |
+| 並列実行 | `MANUAL_ANNOTATE_CONCURRENCY`（既定3）のワーカープールで並列に処理する |
+| 親からの分離 | 手順を生成する gemma は注釈の存在を知らない。注釈は解析（analyze）とは別のエンドポイント・別の SSE ストリームの後段ステージ |
+| 観測可能性 | 採用・棄却の結果が理由（`reason`）つきで1手順ずつ SSE に流れる。UI には「注釈サブエージェント実行中… n / m」と出る |
 
 ## 前提と制約
 
@@ -175,4 +212,4 @@ MacBook Air M5 (32GB) での計測値:
 - **アップロードされたファイルは消えない**。`public/uploads/` に溜まり続ける。
 - 動画は `arrayBuffer()` で一旦メモリに載せるため、上限を `MAX_UPLOAD_MB`（既定 500MB）で制限している。大きな動画を扱うならストリーミング書き込みに変えること。
 - 1リクエストが数十秒〜数分ブロックする。同時に何本も投げると llama-server 側で詰まる。
-- **`/manual` の「ZIPで書き出す」は、手順書（.md）とスクリーンショット（`images/`）を1つの ZIP にまとめてダウンロードする。** 画像はブラウザが `/uploads/<uuid>/frames/...` から都度 fetch して ZIP に同梱するので、展開すればサーバが動いていない環境でも Markdown 単体でプレビューできる（`jszip` を使用、クライアント完結でサーバ往復は無い）。
+- **`/manual` の「ZIPで書き出す」は、手順書（.md）とスクリーンショット（`images/`）を1つの ZIP にまとめてダウンロードする。** 画像はブラウザが `/uploads/<uuid>/frames/...` から都度 fetch して ZIP に同梱するので、展開すればサーバが動いていない環境でも Markdown 単体でプレビューできる（`jszip` を使用、クライアント完結でサーバ往復は無い）。注釈がある手順は、赤枠・番号バッジを Canvas で焼き込んだ PNG を入れる（焼き込みに失敗したら元画像にフォールバックする）。

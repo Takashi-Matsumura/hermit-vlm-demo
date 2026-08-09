@@ -89,9 +89,40 @@ export type ManualStep = {
   description: string;
 };
 
+/**
+ * 正規化バウンディングボックス。画像の左上を [0,0]、右下を [1000,1000] とする。
+ * Qwen3-VL がこの座標系で返すので、ピクセルに直さずこのまま保存する
+ * （フレーム PNG を別解像度で作り直しても注釈が壊れない）。
+ */
+export type NormalizedBox = { x1: number; y1: number; x2: number; y2: number };
+
+/** 注釈サブエージェントが特定した、手順で操作する対象1件 */
+export type AnnotationTarget = {
+  /** その要素に表示されている文字（「印刷」など）。文字が無い要素では空文字 */
+  label: string;
+  /** button / input / dropdown / checkbox / menu / tab / link / other */
+  kind: string;
+  box: NormalizedBox;
+};
+
+/** スクリーンショット注釈サブエージェントの出力。1手順ぶん */
+export type StepAnnotation = {
+  /** 操作する順に並んだ対象。1〜4件。バッジの番号は配列の添字+1 */
+  targets: AnnotationTarget[];
+  /** 注釈を作ったときのフレーム PNG の実寸。SVG の viewBox と線の太さの計算に使う */
+  frameWidth: number;
+  frameHeight: number;
+};
+
 export type ManualStepWithMeta = ManualStep & {
   /** time に対応するフレーム PNG。手順のサムネイルと Markdown の画像に使う */
   imageUrl: string;
+  /**
+   * 注釈サブエージェント（/api/manual/annotate）の結果。
+   * 未実行・対象なし・妥当性検証で棄却、のいずれでも undefined になる。
+   * 任意プロパティにしてあるので、注釈が無い既存の result.json はそのまま読める。
+   */
+  annotation?: StepAnnotation;
 };
 
 /**
@@ -133,4 +164,23 @@ export type ManualAnalyzeEvent =
   | { type: "summary"; text: string }
   | { type: "steps"; steps: ManualStepWithMeta[] }
   | { type: "done"; id: string }
+  | { type: "error"; message: string };
+
+/**
+ * /api/manual/annotate が SSE で流すイベント。
+ * ManualAnalyzeEvent とは別 union にしてある（役割が完全に分離しているため、
+ * 片方を変えてももう片方の解析パイプラインに影響しない）。
+ */
+export type ManualAnnotateEvent =
+  | { type: "start"; total: number }
+  | {
+      type: "annotation";
+      /** steps 配列の添字。並列実行なので順不同で届く。突合はこれで行う（time ではない） */
+      index: number;
+      time: number;
+      annotation: StepAnnotation | null;
+      /** annotation が null のときだけ入る。棄却理由を可視化するためのもの */
+      reason?: "no_json" | "not_found" | "no_valid_target" | "failed";
+    }
+  | { type: "done"; annotated: number }
   | { type: "error"; message: string };

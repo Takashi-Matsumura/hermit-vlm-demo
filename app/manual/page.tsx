@@ -7,6 +7,7 @@ import { formatTime } from "@/lib/manual";
 import { readSse } from "@/lib/sse";
 import type {
   ManualAnalyzeEvent,
+  ManualAnnotateEvent,
   ManualStepWithMeta,
   SearchHit,
   Utterance,
@@ -41,13 +42,69 @@ export default function ManualPage() {
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
 
+  const [annotating, setAnnotating] = useState(false);
+  const [annotateProgress, setAnnotateProgress] = useState<{ done: number; total: number }>({
+    done: 0,
+    total: 0,
+  });
+
   const videoRef = useRef<HTMLVideoElement>(null);
+  // annotate の SSE が別の動画に切り替わった後まで届いた場合に、無関係な steps を
+  // 上書きしないためのガード（新しい analyze が始まるたびに更新する）
+  const activeIdRef = useRef<string>("");
 
   const seekTo = useCallback((time: number) => {
     const video = videoRef.current;
     if (!video) return;
     video.currentTime = time;
     void video.play();
+  }, []);
+
+  /**
+   * スクリーンショット注釈サブエージェントを起動する。手順が確定した result.json が
+   * 既にサーバにある前提（analyze の done イベント後に呼ぶ）なので、id だけで動く。
+   * 失敗してもマニュアル本体（手順・ZIP）はそのまま使えるので、エラーはログに残すだけにする。
+   */
+  const annotate = useCallback(async (id: string) => {
+    setAnnotating(true);
+    setAnnotateProgress({ done: 0, total: 0 });
+
+    try {
+      const res = await fetch("/api/manual/annotate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (!res.body) throw new Error("レスポンスが空です");
+
+      await readSse<ManualAnnotateEvent>(res.body, (event) => {
+        // 待っている間に別の動画の解析が始まっていたら、この結果は捨てる
+        if (activeIdRef.current !== id) return;
+
+        switch (event.type) {
+          case "start":
+            setAnnotateProgress({ done: 0, total: event.total });
+            break;
+          case "annotation":
+            setAnnotateProgress((prev) => ({ ...prev, done: prev.done + 1 }));
+            // index で突合する（time ではない）。手順統合に失敗したグループでは
+            // 同じ time の手順が複数残りうるため
+            setSteps((prev) =>
+              prev.map((step, i) =>
+                i === event.index ? { ...step, annotation: event.annotation ?? undefined } : step,
+              ),
+            );
+            break;
+          case "done":
+          case "error":
+            break;
+        }
+      });
+    } catch (e) {
+      console.error("[manual] 注釈の生成に失敗しました:", e);
+    } finally {
+      if (activeIdRef.current === id) setAnnotating(false);
+    }
   }, []);
 
   const analyze = useCallback(async (file: File) => {
@@ -63,6 +120,10 @@ export default function ManualPage() {
     setDuration(0);
     setUtteranceCount(0);
     setUtteranceFrameCount(0);
+    // 前の動画の注釈サブエージェントがまだ走っていても、その結果は新しい動画に適用しない
+    activeIdRef.current = "";
+    setAnnotating(false);
+    setAnnotateProgress({ done: 0, total: 0 });
 
     const formData = new FormData();
     formData.append("video", file);
@@ -74,6 +135,7 @@ export default function ManualPage() {
       await readSse<ManualAnalyzeEvent>(res.body, (event) => {
         switch (event.type) {
           case "info":
+            activeIdRef.current = event.id;
             setAnalysisId(event.id);
             setVideoUrl(event.videoUrl);
             setDuration(event.duration);
@@ -103,6 +165,9 @@ export default function ManualPage() {
             break;
           case "done":
             setStatus("done");
+            // result.json は route.ts 側で書き終わってから done が送られるので、
+            // このタイミングなら annotate から必ず読める
+            void annotate(event.id);
             break;
           case "error":
             setError(event.message);
@@ -114,7 +179,13 @@ export default function ManualPage() {
       setError(e instanceof Error ? e.message : String(e));
       setStatus("error");
     }
-  }, []);
+  }, [annotate]);
+
+  /** 「注釈をやり直す」ボタン用。実行中の多重起動は防ぐ（スロットを食い潰さないため） */
+  const reannotate = useCallback(() => {
+    if (!analysisId || annotating) return;
+    void annotate(analysisId);
+  }, [analysisId, annotating, annotate]);
 
   const search = useCallback(async () => {
     if (!query.trim() || !analysisId) return;
@@ -313,7 +384,15 @@ export default function ManualPage() {
                 className="h-auto max-h-[70vh] w-full rounded-xl border border-zinc-800 bg-black object-contain"
               />
 
-              <ManualSteps fileName={fileName} summary={summary} steps={steps} onSeek={seekTo} />
+              <ManualSteps
+                fileName={fileName}
+                summary={summary}
+                steps={steps}
+                onSeek={seekTo}
+                annotating={annotating}
+                annotateProgress={annotateProgress}
+                onReannotate={reannotate}
+              />
 
               {summary && (
                 <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
@@ -351,7 +430,7 @@ export default function ManualPage() {
                   <h2 className="mb-3 text-sm font-medium text-zinc-400">目次</h2>
                   <ol className="flex flex-col gap-1">
                     {steps.map((step, index) => (
-                      <li key={step.time}>
+                      <li key={`${index}-${step.time}`}>
                         <button
                           type="button"
                           onClick={() => seekTo(step.time)}
