@@ -18,6 +18,39 @@ const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE ?? "ja";
 
 export type Utterance = { start: number; end: number; text: string };
 
+/**
+ * 同一テキストがこの秒数以内に再出現したら、ハルシネーションループとみなして間引く。
+ * 実測（460秒の操作説明動画）では「郵便番号から、ご依頼主を入力しました。」が
+ * 217〜286秒の間に21回、「印刷済みの送り状が確認できます。」が「閉じるをクリックします。」を
+ * 挟みながら419〜460秒の間に11回、いずれも数秒間隔で繰り返された。
+ */
+const REPEAT_WINDOW_SECONDS = 20;
+
+/**
+ * whisper.cpp は無音区間や単調な音声区間で、直前の出力を延々と繰り返す
+ * ハルシネーションループを起こすことがある（既知の不具合）。この水増しされた発話は
+ * 手順生成のプロンプト（lib/llm.ts の buildContext）を不必要に長くし、LLM の応答生成が
+ * 異常に長引く原因になる（lib/llm.ts の postJson が既定300秒でタイムアウトし、
+ * 解析全体が失敗する）ため、書き起こし直後に間引く。
+ *
+ * テキストごとに直前の出現時刻を覚えておき、REPEAT_WINDOW_SECONDS 以内の再出現を捨てる。
+ * 捨てた発話の時刻も基準に含める（前回「見た」時刻を更新し続ける）ことで、
+ * 数秒おきに長く続くループも1件にまとまる。
+ */
+export function dedupeRepeatedUtterances(utterances: Utterance[]): Utterance[] {
+  const lastSeenAt = new Map<string, number>();
+  const result: Utterance[] = [];
+
+  for (const u of utterances) {
+    const lastStart = lastSeenAt.get(u.text);
+    const isRepeat = lastStart !== undefined && u.start - lastStart < REPEAT_WINDOW_SECONDS;
+    lastSeenAt.set(u.text, u.start);
+    if (!isRepeat) result.push(u);
+  }
+
+  return result;
+}
+
 /** 動画に音声トラックがあるか判定する */
 async function hasAudioTrack(videoPath: string): Promise<boolean> {
   const { stdout } = await run("ffprobe", [
@@ -65,13 +98,15 @@ export async function transcribe(videoPath: string, workDir: string): Promise<Ut
     const raw = await readFile(`${jsonBase}.json`, "utf-8");
     const parsed = JSON.parse(raw) as WhisperJson;
 
-    return (parsed.transcription ?? [])
+    const segments = (parsed.transcription ?? [])
       .map((seg) => ({
         start: seg.offsets.from / 1000,
         end: seg.offsets.to / 1000,
         text: seg.text.trim(),
       }))
       .filter((u) => u.text.length > 0);
+
+    return dedupeRepeatedUtterances(segments);
   } finally {
     // 中間ファイルは result.json に書き起こし結果を保存すれば不要なので都度消す
     await unlink(wavPath).catch(() => {});
