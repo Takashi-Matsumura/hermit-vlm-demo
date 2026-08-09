@@ -17,6 +17,9 @@ export default function ManualSteps({
   annotating,
   annotateProgress,
   onReannotate,
+  verifying,
+  verifyProgress,
+  onReverify,
 }: {
   fileName: string;
   summary: string;
@@ -26,6 +29,10 @@ export default function ManualSteps({
   annotating: boolean;
   annotateProgress: { done: number; total: number };
   onReannotate: () => void;
+  /** スクリーンショット検証サブエージェント（/api/manual/verify）が実行中かどうか */
+  verifying: boolean;
+  verifyProgress: { round: number; done: number; total: number };
+  onReverify: () => void;
 }) {
   const [zipping, setZipping] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
@@ -86,25 +93,39 @@ export default function ManualSteps({
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-medium text-zinc-400">操作手順</h2>
         <div className="flex items-center gap-2">
-          {annotating ? (
+          {verifying ? (
+            <span className="text-xs text-zinc-500">
+              スクリーンショット検証中… {verifyProgress.round}周目 {verifyProgress.done} /{" "}
+              {verifyProgress.total}
+            </span>
+          ) : annotating ? (
             <span className="text-xs text-zinc-500">
               注釈サブエージェント実行中… {annotateProgress.done} / {annotateProgress.total}
             </span>
           ) : (
             steps.length > 0 && (
-              <button
-                type="button"
-                onClick={onReannotate}
-                className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800"
-              >
-                注釈をやり直す
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={onReverify}
+                  className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800"
+                >
+                  検証をやり直す
+                </button>
+                <button
+                  type="button"
+                  onClick={onReannotate}
+                  className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800"
+                >
+                  注釈をやり直す
+                </button>
+              </>
             )
           )}
           <button
             type="button"
             onClick={() => void download()}
-            disabled={steps.length === 0 || zipping}
+            disabled={steps.length === 0 || zipping || verifying}
             className="rounded-lg bg-zinc-100 px-3 py-2 text-sm font-medium text-zinc-900 transition-colors hover:bg-white disabled:opacity-50"
           >
             {zipping ? "書き出しています…" : "ZIPで書き出す"}
@@ -147,6 +168,14 @@ export default function ManualSteps({
                     手順 {index + 1}
                   </span>
                   <span className="font-mono text-xs text-emerald-400">{formatTime(step.time)}</span>
+                  {step.verification?.needsReview && (
+                    <span
+                      className="rounded bg-amber-950/50 px-1.5 py-0.5 text-[10px] text-amber-300"
+                      title="スクリーンショット検証サブエージェントが3回試しても、説明文に合う画面を見つけられませんでした"
+                    >
+                      要確認
+                    </span>
+                  )}
                 </span>
                 <span className="text-sm font-medium text-zinc-100">{step.title}</span>
                 <span className="text-sm leading-6 text-zinc-300">{step.description}</span>

@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import { parseStepAnnotation, readPngSize } from "@/lib/annotation";
 import { framePath, isAnalysisId } from "@/lib/analysis";
+import { mapWithConcurrency } from "@/lib/concurrency";
 import { annotateStepTarget } from "@/lib/llm";
 import type { ManualAnnotateEvent, ManualResult, StepAnnotation } from "@/lib/types";
 
@@ -18,27 +19,6 @@ const UPLOAD_ROOT = path.join(process.cwd(), "public", "uploads");
  * 20手順・3並列で実測40〜60秒（直列なら140秒）。差の12秒より対話性を優先する。
  */
 const CONCURRENCY = Number(process.env.MANUAL_ANNOTATE_CONCURRENCY ?? "3");
-
-/**
- * items を同時 limit 件までで処理する。
- * fn は内部で必ず try/catch すること（throw するとワーカーが1本死んで並列度が落ちる）。
- */
-async function mapWithConcurrency<T>(
-  items: T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<void>,
-): Promise<void> {
-  let cursor = 0;
-  await Promise.all(
-    Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
-      while (true) {
-        const index = cursor++;
-        if (index >= items.length) return;
-        await fn(items[index], index);
-      }
-    }),
-  );
-}
 
 export async function POST(request: Request): Promise<Response> {
   const body: unknown = await request.json().catch(() => null);

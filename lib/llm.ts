@@ -438,6 +438,65 @@ export async function annotateStepTarget(input: {
   return body.choices[0]?.message.content?.trim() ?? "";
 }
 
+/**
+ * スクリーンショット検証サブエージェント。
+ *
+ * 「現在この手順に使われている画像」と「動画から新たに抽出した候補」をまとめて
+ * 1回の呼び出しで見せ、最も説明に合うものを選ばせる。検証（不一致か）と
+ * 選択（どれに差し替えるか）を1回のVLM呼び出しに統合することで、
+ * 手順数×候補数の呼び出し爆発を避ける（answerFromFrames と同じ複数画像パターン）。
+ *
+ * annotateStepTarget と同じく低temperature（構造化判定タスクのため）。
+ */
+export async function verifyStepScreenshot(input: {
+  title: string;
+  description: string;
+  /** 1枚目=現在の画像、2枚目以降=新規候補。time はラベル表示にだけ使う */
+  candidates: { time: number; base64: string }[];
+  timeoutMs?: number;
+}): Promise<string> {
+  const { title, description, candidates, timeoutMs } = input;
+  const labels = candidates
+    .map((c, i) => `${i + 1}枚目（${i === 0 ? "現在使われている画像" : "候補"}・${c.time.toFixed(1)}秒）`)
+    .join(" / ");
+
+  const body = await postJson<ChatResponse>(
+    `${VLM_ENDPOINT}/v1/chat/completions`,
+    {
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "これはPC操作マニュアルの1手順に対応するスクリーンショット候補です。\n" +
+                `手順のタイトル: 「${title}」\n` +
+                `手順の説明: 「${description}」\n\n` +
+                `${labels} の画像です。\n\n` +
+                "この説明文の内容が実際に写っている（またはこれから起きようとしている）画像はどれですか。\n" +
+                "最も説明に合う画像の番号を1つ選んでください。1枚目（現在の画像）が最も適切であれば1と答えてください。\n" +
+                "どの画像も説明に合わない場合は 0 と答えてください。近そうな画像で妥協しないでください。\n\n" +
+                'JSONオブジェクトだけを出力してください: {"best": 番号}\n' +
+                "説明文やコードブロックは不要です。",
+            },
+            ...candidates.map((c) => ({
+              type: "image_url" as const,
+              image_url: { url: `data:image/png;base64,${c.base64}` },
+            })),
+          ],
+        },
+      ],
+      max_tokens: 100,
+      temperature: 0.1,
+      top_p: 0.9,
+    },
+    timeoutMs ?? 90_000,
+  );
+
+  return body.choices[0]?.message.content?.trim() ?? "";
+}
+
 /** bge-m3 でテキストをベクトル化する。検索用。 */
 export async function embed(texts: string[]): Promise<number[][]> {
   const body = await postJson<{ data: { embedding: number[] }[] }>(
