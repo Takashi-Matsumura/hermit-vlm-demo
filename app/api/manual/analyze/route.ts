@@ -3,8 +3,8 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { transcribe } from "@/lib/audio";
-import { captionOperationFrame, embed, generateManualSteps, summarize } from "@/lib/llm";
-import { mergeFrameTimes, snapToFrameTime } from "@/lib/manual";
+import { captionOperationFrame, embed, generateManualSteps, mergeManualSteps, summarize } from "@/lib/llm";
+import { groupStepsByFrame, mergeFrameTimes, snapToFrameTime } from "@/lib/manual";
 import { extractFrame, getVideoInfo, selectFrameTimes } from "@/lib/video";
 import type { Caption, ManualAnalyzeEvent, ManualResult, ManualStepWithMeta } from "@/lib/types";
 
@@ -121,15 +121,36 @@ export async function POST(request: Request): Promise<Response> {
           generateManualSteps(captions, utterances),
         ]);
 
+        // 手順の統合に十数秒かかるので、確定済みの要約は先に出す
+        send({ type: "summary", text: summary });
+
         // モデルが返す time は説明文から拾った近似値なので、実在するフレームの時刻に寄せる。
         // これで imageUrl が必ず存在し、/api/ask のフレーム参照とも時刻がそろう。
         const frameTimes = frames.map((f) => f.time);
-        const steps: ManualStepWithMeta[] = rawSteps.map((step) => {
+        const snappedSteps: ManualStepWithMeta[] = rawSteps.map((step) => {
           const time = snapToFrameTime(step.time, frameTimes);
           return { ...step, time, imageUrl: `/uploads/${id}/frames/f_${time.toFixed(3)}.png` };
         });
 
-        send({ type: "summary", text: summary });
+        // 1つの画面で続けて入力する操作は、モデルが別々の手順として返しても同じフレームに
+        // スナップされる（実測で32手順中24手順が9グループに重なった）。同じ画面の操作は
+        // まとめて1手順にする。グループは高々フレーム数なので並行に投げる。
+        const stepGroups = await Promise.all(
+          groupStepsByFrame(snappedSteps).map(async (group): Promise<ManualStepWithMeta[]> => {
+            if (group.length === 1) return group;
+            try {
+              const { title, description } = await mergeManualSteps(group);
+              // time と imageUrl はグループ内で同一なので先頭のものをそのまま使う
+              return [{ ...group[0], title, description }];
+            } catch (error) {
+              // 統合は後処理なので、失敗したグループは統合前のまま残して解析は続ける
+              console.error(`[manual] 手順の統合に失敗しました（${group[0].time}秒）:`, error);
+              return group;
+            }
+          }),
+        );
+        const steps: ManualStepWithMeta[] = stepGroups.flat();
+
         send({ type: "steps", steps });
 
         // 検索用のベクトルは結果と一緒に保存し、/api/search から読み出す
