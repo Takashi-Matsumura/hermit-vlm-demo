@@ -4,7 +4,16 @@
  * （lib/manual.ts と同じ方針）。
  */
 
-export type WorkflowStepId = "transcribe" | "caption" | "compose" | "verify" | "annotate";
+export type WorkflowStepId =
+  | "transcribe"
+  | "caption"
+  | "compose"
+  | "verify"
+  | "annotate"
+  // 意図駆動モード（NARRATED_WORKFLOW_STEPS）のみで使う値
+  | "intent"
+  | "plan"
+  | "capture";
 export type WorkflowTier = "main" | "sub";
 export type WorkflowStepStatus = "pending" | "running" | "done" | "skipped" | "failed";
 
@@ -162,4 +171,166 @@ export function deriveWorkflow(input: WorkflowInput): WorkflowStepView[] {
   };
 
   return [transcribe, caption, compose, verify, annotate];
+}
+
+/**
+ * /api/manual/narrated/analyze の SSE で最後に届いたイベント種別。
+ * deriveWorkflow / AnalyzePhase とは別に用意する。意図駆動モードは
+ * 完成動画モードと emit 順序そのものが異なる（フレーム抽出が意図把握の後段になる）ため、
+ * 1本の phase 値で共有すると route.ts の変更が両モードに波及してしまう。
+ *
+ * chunk・capture・step は mapWithConcurrency による並列実行なので完了順に届く。
+ * このため下の deriveNarratedWorkflow は、素材の収集・本文の執筆ステップの完了判定に
+ * この phase の前後関係ではなく summary/done への到達（＝全手順ぶんのループが終わったこと）
+ * を使う（deriveWorkflow の caption ステップと同じ考え方）。
+ */
+export type NarratedPhase =
+  | ""
+  | "info"
+  | "utterances"
+  | "chunk"
+  | "intent"
+  | "plan"
+  | "capture"
+  | "step"
+  | "summary"
+  | "done";
+
+const NARRATED_PHASE_ORDER: readonly NarratedPhase[] = [
+  "",
+  "info",
+  "utterances",
+  "chunk",
+  "intent",
+  "plan",
+  "capture",
+  "step",
+  "summary",
+  "done",
+];
+
+/**
+ * chunk・capture・step は並列実行で完了順に届くため、クライアント側で phase state を
+ * 更新するときは単純な上書き（last-wins）ではなく、この rank を使った最大値更新にすること
+ * （例: setPhase(prev => narratedPhaseRank(next) > narratedPhaseRank(prev) ? next : prev)）。
+ * でなければ、後から届いた低ランクのイベントでフェーズ表示が逆行してしまう。
+ */
+export function narratedPhaseRank(phase: NarratedPhase): number {
+  return NARRATED_PHASE_ORDER.indexOf(phase);
+}
+
+/** 表示順そのもの（メインエージェント→サブエージェント）。WORKFLOW_STEPS とは無関係に独立して持つ */
+export const NARRATED_WORKFLOW_STEPS: readonly WorkflowStepMeta[] = [
+  { id: "transcribe", label: "文字起こし", model: "whisper.cpp", tier: "main" },
+  { id: "intent", label: "意図の把握", model: "gemma-4-12b", tier: "main" },
+  { id: "plan", label: "構成の決定", model: "gemma-4-12b", tier: "main" },
+  { id: "capture", label: "素材の収集", model: "Qwen3-VL", tier: "main" },
+  { id: "compose", label: "本文の執筆", model: "gemma-4-12b", tier: "main" },
+  { id: "verify", label: "検証", model: "Qwen3-VL", tier: "sub" },
+  { id: "annotate", label: "注釈", model: "Qwen3-VL", tier: "sub" },
+];
+
+export type NarratedWorkflowInput = {
+  status: "idle" | "analyzing" | "done" | "error";
+  phase: NarratedPhase;
+  utteranceCount: number;
+  /** info イベントで確定する、発話チャンクの総数 */
+  chunkCount: number;
+  /** chunk イベントで実際に届いた件数 */
+  chunkDoneCount: number;
+  /** plan イベントで確定する、計画された手順の総数 */
+  plannedCount: number;
+  /** capture イベントの total（未着なら0） */
+  captureTotal: number;
+  /** capture イベントで実際に届いた件数 */
+  captureDoneCount: number;
+  /** step イベントで実際に確定した手順数 */
+  stepCount: number;
+  verify: SubAgentRun;
+  annotate: SubAgentRun;
+};
+
+export function deriveNarratedWorkflow(input: NarratedWorkflowInput): WorkflowStepView[] {
+  const rank = narratedPhaseRank(input.phase);
+
+  // 文字起こし: 意図駆動モードは全文文字起こしが前提で、音声が無ければ route.ts が
+  // error で打ち切る（skipped にはならない）。info 到着後は常に件数付きで done。
+  const transcribe: WorkflowStepView = (() => {
+    if (rank < narratedPhaseRank("info")) {
+      return {
+        ...NARRATED_WORKFLOW_STEPS[0],
+        status: input.status === "error" ? "failed" : input.status === "analyzing" ? "running" : "pending",
+      };
+    }
+    return { ...NARRATED_WORKFLOW_STEPS[0], status: "done", detail: `${input.utteranceCount}件` };
+  })();
+
+  // 意図の把握: map フェーズ（チャンクごとの局所アウトライン）+ reduce フェーズ。
+  // intent イベント到着で完了。
+  const intent: WorkflowStepView = (() => {
+    if (rank < narratedPhaseRank("info")) return { ...NARRATED_WORKFLOW_STEPS[1], status: "pending" };
+    if (rank >= narratedPhaseRank("intent")) return { ...NARRATED_WORKFLOW_STEPS[1], status: "done" };
+    return {
+      ...NARRATED_WORKFLOW_STEPS[1],
+      status: input.status === "error" ? "failed" : "running",
+      detail: input.chunkCount > 0 ? `${input.chunkDoneCount} / ${input.chunkCount} チャンク` : "起動中…",
+    };
+  })();
+
+  // 構成の決定: reduce の直後に plan イベントが届く（intent とほぼ同時）
+  const plan: WorkflowStepView = (() => {
+    if (rank < narratedPhaseRank("intent")) return { ...NARRATED_WORKFLOW_STEPS[2], status: "pending" };
+    if (rank >= narratedPhaseRank("plan")) {
+      return { ...NARRATED_WORKFLOW_STEPS[2], status: "done", detail: `${input.plannedCount}項目` };
+    }
+    return { ...NARRATED_WORKFLOW_STEPS[2], status: input.status === "error" ? "failed" : "running" };
+  })();
+
+  // 素材の収集: 手順ごとに並列でフレーム抽出が進むため、summary 到達を完了の判定に使う
+  const capture: WorkflowStepView = (() => {
+    if (rank < narratedPhaseRank("plan")) return { ...NARRATED_WORKFLOW_STEPS[3], status: "pending" };
+    if (rank >= narratedPhaseRank("summary")) {
+      return {
+        ...NARRATED_WORKFLOW_STEPS[3],
+        status: "done",
+        detail: `${input.captureDoneCount} / ${input.captureTotal} フレーム`,
+      };
+    }
+    return {
+      ...NARRATED_WORKFLOW_STEPS[3],
+      status: input.status === "error" ? "failed" : "running",
+      detail: input.captureTotal > 0 ? `${input.captureDoneCount} / ${input.captureTotal} フレーム` : undefined,
+    };
+  })();
+
+  // 本文の執筆: 手順ごとの capture の直後に writeNarratedStep が走る。summary〜done の区間は
+  // embed + result.json 書き込みが終わるまで「保存中…」として running のまま見せる。
+  const compose: WorkflowStepView = (() => {
+    if (rank < narratedPhaseRank("plan")) return { ...NARRATED_WORKFLOW_STEPS[4], status: "pending" };
+    if (rank >= narratedPhaseRank("done")) {
+      return { ...NARRATED_WORKFLOW_STEPS[4], status: "done", detail: `${input.stepCount}手順` };
+    }
+    if (input.status === "error") return { ...NARRATED_WORKFLOW_STEPS[4], status: "failed" };
+    return {
+      ...NARRATED_WORKFLOW_STEPS[4],
+      status: "running",
+      detail: rank >= narratedPhaseRank("summary") ? "保存中…" : `${input.stepCount} / ${input.plannedCount} 手順`,
+    };
+  })();
+
+  const verify: WorkflowStepView = {
+    ...NARRATED_WORKFLOW_STEPS[5],
+    label: subAgentLabel(NARRATED_WORKFLOW_STEPS[5].label, input.verify.rounds),
+    status: subAgentStatus(input.verify),
+    detail: subAgentDetail(input.verify),
+  };
+
+  const annotate: WorkflowStepView = {
+    ...NARRATED_WORKFLOW_STEPS[6],
+    label: subAgentLabel(NARRATED_WORKFLOW_STEPS[6].label, input.annotate.rounds),
+    status: subAgentStatus(input.annotate),
+    detail: subAgentDetail(input.annotate),
+  };
+
+  return [transcribe, intent, plan, capture, compose, verify, annotate];
 }

@@ -117,6 +117,28 @@ curl -N -X POST http://localhost:3000/api/manual/verify \
 
 `round-start` → 手順ごとの `verification`（差し替えたら `replacedImageUrl`/`replacedTime` が入る）→ `round-done` が最大3周流れ、最後に `done`（`totalFixed`/`needsReview`）で終わる。実データ（460秒・22手順）では1周目で10件差し替え、2周目で残り1件が確定し、`needsReview: 0` で終わった。
 
+### 実況収録から作る（意図駆動モード）で試す
+
+上の「完成動画から」は、すでに手順として編集済みの操作動画を前提にしている。もう1つのモード
+「実況収録から」（`/api/manual/narrated/analyze`）は逆の入力を想定していて、**これから
+マニュアルを作りたい人が、対象アプリを操作しながら「何をしているか・何に注意すべきか」を
+喋っただけの収録動画**を渡すと、まず作成者の意図（誰向けか・何を伝えたいか）を汲み取ってから、
+それを裏づけるのに必要な素材だけを動画から集める。`WHISPER_MODEL` の設定が必須（音声が
+無ければ即座にエラーで終わる。「静かに劣化」させない設計。詳細は下の実装上の注意を参照）。
+
+`/manual` のセグメント切替で「実況収録から」を選び、操作画面を録画しながらナレーションした
+動画をドロップする。UI を経由せず単独で試すには:
+
+```bash
+curl -N -X POST http://localhost:3000/api/manual/narrated/analyze -F video=@your-video.mp4
+```
+
+`info` → `utterances` → `chunk`（発話チャンクごとの局所アウトライン）→ `intent`（マニュアル
+全体の設計図）→ `plan`（統合された手順の骨格）→ `capture`/`step`（手順ごとの素材収集と
+本文執筆、並列実行）→ `summary` → `done` の順に流れる。`done` の後は「完成動画から」と
+まったく同じ `result.json` を使うので、`verify`・`annotate`・`/api/search`・`/api/ask` は
+無変更で動く。実データ（19分32秒・219発話・3チャンク）では解析全体で約11分、9手順が生成された。
+
 ## 構成
 
 ```
@@ -125,26 +147,29 @@ app/
   api/analyze/route.ts         動画を受け取り、進捗を SSE で流しながら解析する
   api/search/route.ts          キャプションのベクトル検索
   api/ask/route.ts             動画への質問応答（テキスト→必要なら画像にエスカレーション）
-  manual/page.tsx              操作マニュアル自動生成のUI
+  manual/page.tsx              操作マニュアル自動生成のUI（完成動画/実況収録の2モード切替）
   manual/WorkflowHeader.tsx    ヘッダーのワークフロー表示（メイン/サブエージェントの進捗を可視化）
+  manual/ManualIntent.tsx      意図駆動モードの設計図表示（対象読者・ゴール・前提条件・注意事項）
   manual/ManualSteps.tsx       手順一覧 + ZIPエクスポート（Markdown + スクリーンショット）
   manual/QaChat.tsx            手順に質問するチャット（/api/ask を再利用）
   manual/AnnotatedFrame.tsx    スクリーンショットに赤枠・番号バッジを重ねる SVG オーバーレイ
   manual/bakeAnnotatedPng.ts   注釈を Canvas で PNG に焼き込む（ZIP エクスポート用）
-  api/manual/analyze/route.ts  操作マニュアル用の解析エンドポイント
-  api/manual/verify/route.ts   スクリーンショット検証サブエージェントのエンドポイント
-  api/manual/annotate/route.ts スクリーンショット注釈サブエージェントのエンドポイント
+  api/manual/analyze/route.ts           完成動画モードの解析エンドポイント
+  api/manual/narrated/analyze/route.ts  意図駆動モード（実況収録から）の解析エンドポイント
+  api/manual/verify/route.ts   スクリーンショット検証サブエージェントのエンドポイント（両モード共通）
+  api/manual/annotate/route.ts スクリーンショット注釈サブエージェントのエンドポイント（両モード共通）
 lib/
-  llm.ts                 llama-server 3系統のクライアント（annotateStepTarget / refineStepTarget / verifyStepScreenshot を含む）
+  llm.ts                 llama-server 3系統のクライアント（annotateStepTarget / refineStepTarget / verifyStepScreenshot、outlineUtteranceChunk / reduceManualOutline / writeNarratedStep を含む）
   video.ts                ffmpeg / ffprobe ラッパー（レターボックス検出 detectContentRect / crop拡大 cropFramePng を含む）
   audio.ts                whisper.cpp による音声の文字起こし
   analysis.ts             result.json のロードとベクトル検索（search / ask 共通）
   manual.ts                操作マニュアル用の純粋関数（フレーム時刻マージ・同一フレーム手順のグループ化・Markdown生成）
+  intent.ts                意図駆動モードの純粋関数（発話チャンク分割・アウトラインのパースと統合・被覆率判定・候補フレーム時刻の選定）
   annotation.ts            注釈サブエージェントの純粋関数（応答のパース・妥当性検証・座標の幾何計算・crop-and-zoomのviewport変換）
   verification.ts          検証サブエージェントの純粋関数（候補時刻の選定・応答のパース）
-  concurrency.ts            ワーカープール方式の並列実行ヘルパー（annotate / verify 共通）
+  concurrency.ts            ワーカープール方式の並列実行ヘルパー（annotate / verify / 意図駆動モードの map・素材収集で共通）
   sse.ts                   SSE読み取りの汎用ヘルパー（/manual 用）
-  workflow.ts               ヘッダーのワークフロー表示用の状態導出（analyze/verify/annotate の進捗をステップ配列に変換）
+  workflow.ts               ヘッダーのワークフロー表示用の状態導出（両モードそれぞれの進捗をステップ配列に変換）
   types.ts                 サーバ・クライアント共有の型
 samples/                動作確認用のサンプル動画とその生成スクリプト
 ```
@@ -192,6 +217,33 @@ annotate: 動画のレターボックス（左右黒帯）を cropdetect で検�
      → SSE で周回ごとに返しつつ、result.json に書き戻す（一時ファイル + rename でアトミックに）
 ```
 
+処理の流れ（`/manual`・意図駆動モード、`/api/manual/narrated/analyze`）:
+
+```
+動画 → whisper.cpp で全文文字起こし（音声が無ければここでエラー終了。シーン検出は行わない）
+
+パス1a（map）: 発話をチャンク（既定90件・重なり2件）に分割し、チャンクごとに並列で
+     gemma-4-12b に「この区間で作成者が伝えたいこと」を項目化させる。発話には時刻を付けず
+     [番号] だけを渡す（時刻を渡すとモデルが time を出力したがり、範囲外/非単調な値を
+     検証できないまま採用してしまう。番号なら 0..件数-1 の範囲外・重複を機械的に検出できる）
+
+パス1b（reduce）: 局所アウトラインを統合し、マニュアル全体の設計図（タイトル・対象読者・
+     ゴール・前提条件）と、項目のグルーピングを決める。統合先の時間範囲（from/to）は
+     モデルには書かせず、「どの局所項目をまとめるか」だけ決めさせてコード側で算出する
+     （from/to を書かせると重複・非単調な範囲を返すことを実測で確認したため）
+     → 統合結果が発話全体をどれだけ被覆しているかを機械的に判定し、閾値未満なら
+        統合前の局所アウトラインをそのまま採用する
+
+パス2: 計画された手順ごとに並列で、根拠となる発話区間の実時刻を求めてフレームを抽出
+     → Qwen3-VL で操作要素を中心に言語化（captionOperationFrame、完成動画モードと共通）
+     → gemma-4-12b が根拠発話とフレーム説明から手順本文を書く（time はモデルに書かせず、
+        抽出済みフレームの実時刻をそのまま使う。完成動画モードの構造的な時刻ズレ問題を
+        意図駆動モードでは最初から作らない）
+
+→ bge-m3 でベクトル化して result.json に保存（AnalysisResult のスーパーセットなので
+   完成動画モードと同じ verify/annotate/search/ask がそのまま動く）
+```
+
 ## 実測性能
 
 MacBook Air M5 (32GB) での計測値:
@@ -226,6 +278,9 @@ MacBook Air M5 (32GB) での計測値:
 - **verify は annotate より先に実行する。** 画像を差し替えたら古い赤枠注釈は意味を持たなくなるため、差し替え時に `annotation` を無効化する。UI の自動起動チェーンも `analyze の done → verify（最大3周）→ annotate` の順。
 - **「要確認」バッジは、間違った画像を無理に残すより正直に不明を示す設計の結果。** verify が3周試しても説明文に合う画像が見つからない手順には `verification.needsReview: true` が付き、`ManualSteps.tsx` が黄色い「要確認」バッジを出す。原因は主に2つ: (1) 発話のタイミングと実際の画面操作のタイミングが大きくズレていて `selectCandidateTimes` の候補窓に入らない、(2) その操作の瞬間自体が動画内で一瞬すぎて、そもそも良いフレームが存在しない。実データでは「閉じるをクリックする」という手順で、候補にした発話開始時刻のフレームに別のボタン（「一覧画面」）がハイライトされており、どの候補も一致しなかった例がある。
 - **ヘッダーのワークフロー表示（`WorkflowHeader.tsx`）は、フェーズ判定を「枚数比較」ではなく「analyze の SSE で最後に届いたイベント種別」で行う。** `lib/workflow.ts` の `AnalyzePhase`（`"" → info → utterances → caption → summary → steps → done`）は route.ts の emit 順序がこの通りに単調であることに依存する。当初「`frames.length` が `frameCount` に届いたか」で画面解析の完了を判定する案もあったが、`api/manual/analyze/route.ts` はフレーム抽出失敗を握りつぶして `caption` イベントを送らないことがあり、枚数比較では画面解析ステップが永久に「完了」にならないケースがある。`summary` イベントの到着そのものを完了の証拠にすることでこれを回避した（枚数はあくまで detail 表示にだけ使う）。
+- **意図駆動モードの発話チャンク分割は、コンテキスト長の制約ではなく被覆率の品質ゲート。** gemma-4-12b の `n_ctx` は262,144/スロットで、19分の動画1本ぶんの発話（数千トークン）は余裕を持って収まる。にもかかわらず発話400件を一括で `outlineUtteranceChunk` に投げると、後半をほぼ無視して被覆率21%まで崩壊することを実測で確認した（90件程度に分割すると被覆100%）。原因はコンテキスト超過ではなく「長い入力の後半をまとめ漏らす」というモデル側の性質なので、`lib/intent.ts` の `coverageRatio` で機械的に検出し、閾値（`MANUAL_INTENT_MIN_COVERAGE`）未満なら統合結果を捨てて局所アウトラインを採用する。
+- **意図駆動モードは発話に時刻を付けずに渡す。** `[時刻] テキスト` 形式で渡すとモデルが時刻を出力したがり、プロンプトも長くなる（実測: 時刻付き2,456トークン→添字のみ1,521トークン）。添字（`0..発話数-1`）なら範囲外・非整数を機械的に棄却できるが、時刻は「もっともらしい値」を生成されても検証できない。これは完成動画モードの `generateManualSteps` が抱える構造的な時刻ズレ問題（発話の51%が対応フレーム無し、上記参照）と同じ失敗を意図駆動モードで再発させないための設計判断。
+- **アウトラインの統合（reduce）に時間範囲の算術をやらせない。** 局所アウトライン項目の `from`/`to` を直接書き直させる実験では、`"9-150"` と `"20-99"` のような重複・非単調な範囲を返した。`reduceManualOutline` には「どの局所項目をまとめるか」（`members`）だけを決めさせ、実際の `from`/`to` は `lib/intent.ts` の `normalizeOutlineGroups` が計算する。`members` が非連続（例: `[3,7]`）になることもあり、この場合は連続するランごとに別項目へ分割する。
 - **verify/annotate サブエージェントの完了・失敗は SSE の `done`/`error` イベントを主に、`finally` を保険として使う。** `finally` を無条件に「完了」にはできない: 手順が無い等の理由でエンドポイントが `Response.json({error}, {status:400})` を返すと `res.body` は truthy だが `data:` 行が1つも来ず、`readSse` はイベントを送らないまま正常終了する。この場合に無条件で完了扱いにすると 400/404 が「✓ 完了」と表示されてしまうため、`finally` では「まだ `running` のときだけ `failed` にする」関数型更新を使っている。
 
 ## スクリーンショット注釈・検証サブエージェント
