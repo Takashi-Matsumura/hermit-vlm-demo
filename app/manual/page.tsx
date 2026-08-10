@@ -364,23 +364,23 @@ export default function ManualPage() {
     captionStep?.status === "running" && frameCount > 0 ? { done: frames.length, total: frameCount } : null;
 
   return (
-    <div className="min-h-screen bg-zinc-950 font-sans text-zinc-100">
+    <div className="min-h-screen bg-zinc-50 font-sans text-zinc-900">
       <main className="mx-auto flex max-w-5xl flex-col gap-8 px-6 py-12">
         <header className="flex flex-col gap-2">
           <Link
             href="/"
-            className="w-fit text-xs text-zinc-500 underline decoration-dotted hover:text-zinc-300"
+            className="w-fit text-xs text-zinc-500 underline decoration-dotted hover:text-zinc-700"
           >
             ← 動画言語化デモ
           </Link>
           <h1 className="text-3xl font-semibold tracking-tight">操作マニュアル自動生成</h1>
-          <p className="text-sm text-zinc-400">
+          <p className="text-sm text-zinc-600">
             操作画面の録画とナレーションから手順書を作ります。
           </p>
         </header>
 
         {status === "idle" ? (
-          <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
+          <section className="rounded-xl border border-zinc-200 bg-white p-6">
             <label
               onDragOver={(e) => {
                 e.preventDefault();
@@ -390,12 +390,12 @@ export default function ManualPage() {
               onDrop={handleDrop}
               className={`flex cursor-pointer flex-col items-center gap-3 rounded-lg border border-dashed px-6 py-14 transition-colors ${
                 dragging
-                  ? "border-emerald-500 bg-emerald-950/30"
-                  : "border-zinc-700 hover:border-zinc-500 hover:bg-zinc-900"
+                  ? "border-emerald-500 bg-emerald-50"
+                  : "border-zinc-300 hover:border-zinc-500 hover:bg-zinc-100"
               }`}
             >
               <svg
-                className={`h-10 w-10 transition-colors ${dragging ? "text-emerald-400" : "text-zinc-600"}`}
+                className={`h-10 w-10 transition-colors ${dragging ? "text-emerald-600" : "text-zinc-400"}`}
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -405,7 +405,7 @@ export default function ManualPage() {
                 <rect x="2" y="5" width="20" height="14" rx="2" />
                 <path d="m10 9.5 5 2.5-5 2.5z" fill="currentColor" stroke="none" />
               </svg>
-              <span className="text-sm text-zinc-300">
+              <span className="text-sm text-zinc-700">
                 {dragging
                   ? "ここにドロップ"
                   : "操作を声で説明しながら録画した画面録画をドロップ"}
@@ -422,11 +422,11 @@ export default function ManualPage() {
             </label>
           </section>
         ) : (
-          <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 px-6 py-4">
+          <section className="rounded-xl border border-zinc-200 bg-white px-6 py-4">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex min-w-0 items-center gap-3">
                 <svg
-                  className="h-8 w-8 shrink-0 text-zinc-600"
+                  className="h-8 w-8 shrink-0 text-zinc-400"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
@@ -437,12 +437,12 @@ export default function ManualPage() {
                   <path d="m10 9.5 5 2.5-5 2.5z" fill="currentColor" stroke="none" />
                 </svg>
                 <div className="min-w-0">
-                  <h2 className="truncate text-sm font-medium text-zinc-100">{fileName}</h2>
+                  <h2 className="truncate text-sm font-medium text-zinc-900">{fileName}</h2>
                   {metaLine && <p className="mt-0.5 text-xs text-zinc-500">{metaLine}</p>}
                 </div>
               </div>
 
-              <label className="shrink-0 cursor-pointer rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800">
+              <label className="shrink-0 cursor-pointer rounded-lg border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 transition-colors hover:border-zinc-500 hover:bg-zinc-200">
                 別の動画を選ぶ
                 <input
                   type="file"
@@ -459,13 +459,13 @@ export default function ManualPage() {
         )}
 
         {status === "error" && (
-          <p className="rounded-lg bg-red-950/50 px-4 py-3 text-sm text-red-300">
+          <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             エラー: {error}
           </p>
         )}
 
         {status === "done" && utteranceCount === 0 && (
-          <p className="rounded-lg bg-amber-950/40 px-4 py-3 text-sm text-amber-300">
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             音声が検出されませんでした。WHISPER_MODEL の設定を確認してください。
             画面の見た目だけから手順を作るため、精度が大きく下がります。
           </p>
@@ -479,7 +479,7 @@ export default function ManualPage() {
                 ref={videoRef}
                 src={videoUrl}
                 controls
-                className="h-auto max-h-[70vh] w-full rounded-xl border border-zinc-800 bg-black object-contain"
+                className="h-auto max-h-[70vh] w-full rounded-xl border border-zinc-200 bg-black object-contain"
               />
 
               <ManualSteps
@@ -494,27 +494,27 @@ export default function ManualPage() {
               />
 
               {summary && (
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
-                  <h2 className="mb-3 text-sm font-medium text-zinc-400">概要</h2>
-                  <p className="text-sm leading-7 text-zinc-100">{summary}</p>
+                <div className="rounded-xl border border-zinc-200 bg-white p-6">
+                  <h2 className="mb-3 text-sm font-medium text-zinc-600">概要</h2>
+                  <p className="text-sm leading-7 text-zinc-900">{summary}</p>
                 </div>
               )}
 
               {utterances.length > 0 && (
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
-                  <h2 className="mb-4 text-sm font-medium text-zinc-400">字幕</h2>
+                <div className="rounded-xl border border-zinc-200 bg-white p-6">
+                  <h2 className="mb-4 text-sm font-medium text-zinc-600">字幕</h2>
                   <ol className="flex max-h-80 flex-col gap-1 overflow-y-auto">
                     {utterances.map((u) => (
                       <li key={u.start}>
                         <button
                           type="button"
                           onClick={() => seekTo(u.start)}
-                          className="flex w-full items-baseline gap-3 rounded p-2 text-left transition-colors hover:bg-zinc-800/70"
+                          className="flex w-full items-baseline gap-3 rounded p-2 text-left transition-colors hover:bg-zinc-200/70"
                         >
-                          <span className="shrink-0 font-mono text-xs text-emerald-400">
+                          <span className="shrink-0 font-mono text-xs text-emerald-600">
                             {formatTime(u.start)}
                           </span>
-                          <span className="text-sm text-zinc-200">{u.text}</span>
+                          <span className="text-sm text-zinc-800">{u.text}</span>
                         </button>
                       </li>
                     ))}
@@ -525,20 +525,20 @@ export default function ManualPage() {
 
             <aside className="flex flex-col gap-6">
               {steps.length > 0 && (
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-                  <h2 className="mb-3 text-sm font-medium text-zinc-400">目次</h2>
+                <div className="rounded-xl border border-zinc-200 bg-white p-5">
+                  <h2 className="mb-3 text-sm font-medium text-zinc-600">目次</h2>
                   <ol className="flex flex-col gap-1">
                     {steps.map((step, index) => (
                       <li key={`${index}-${step.time}`}>
                         <button
                           type="button"
                           onClick={() => seekTo(step.time)}
-                          className="flex w-full items-baseline gap-3 rounded p-2 text-left transition-colors hover:bg-zinc-800/70"
+                          className="flex w-full items-baseline gap-3 rounded p-2 text-left transition-colors hover:bg-zinc-200/70"
                         >
-                          <span className="shrink-0 font-mono text-xs text-emerald-400">
+                          <span className="shrink-0 font-mono text-xs text-emerald-600">
                             {index + 1}
                           </span>
-                          <span className="text-sm text-zinc-200">{step.title}</span>
+                          <span className="text-sm text-zinc-800">{step.title}</span>
                         </button>
                       </li>
                     ))}
@@ -547,8 +547,8 @@ export default function ManualPage() {
               )}
 
               {status === "done" && (
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-                  <h2 className="mb-3 text-sm font-medium text-zinc-400">手順を検索</h2>
+                <div className="rounded-xl border border-zinc-200 bg-white p-5">
+                  <h2 className="mb-3 text-sm font-medium text-zinc-600">手順を検索</h2>
                   <form
                     onSubmit={(e) => {
                       e.preventDefault();
@@ -560,12 +560,12 @@ export default function ManualPage() {
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                       placeholder="例: 保存ボタン"
-                      className="min-w-0 flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm outline-none placeholder:text-zinc-600 focus:border-zinc-500"
+                      className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-zinc-50 px-3 py-2 text-sm outline-none placeholder:text-zinc-400 focus:border-zinc-500"
                     />
                     <button
                       type="submit"
                       disabled={searching}
-                      className="rounded-lg bg-zinc-100 px-3 py-2 text-sm font-medium text-zinc-900 transition-colors hover:bg-white disabled:opacity-50"
+                      className="rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-800 disabled:opacity-50"
                     >
                       {searching ? "…" : "検索"}
                     </button>
@@ -581,15 +581,15 @@ export default function ManualPage() {
                           <button
                             type="button"
                             onClick={() => seekTo(hit.time)}
-                            className="flex w-full flex-col gap-1 rounded p-2 text-left transition-colors hover:bg-zinc-800/70"
+                            className="flex w-full flex-col gap-1 rounded p-2 text-left transition-colors hover:bg-zinc-200/70"
                           >
-                            <span className="font-mono text-xs text-emerald-400">
+                            <span className="font-mono text-xs text-emerald-600">
                               {formatTime(hit.time)}
                               <span className="ml-2 text-zinc-500">
                                 {(hit.score * 100).toFixed(0)}%
                               </span>
                             </span>
-                            <span className="line-clamp-2 text-sm text-zinc-300">{hit.text}</span>
+                            <span className="line-clamp-2 text-sm text-zinc-700">{hit.text}</span>
                           </button>
                         </li>
                       ))}

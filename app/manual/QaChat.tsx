@@ -98,21 +98,21 @@ export default function QaChat({
   }, [messages.length]);
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-      <h2 className="mb-3 text-sm font-medium text-zinc-400">手順に質問する</h2>
+    <div className="rounded-xl border border-zinc-200 bg-white p-5">
+      <h2 className="mb-3 text-sm font-medium text-zinc-600">手順に質問する</h2>
 
       {messages.length > 0 && (
         <div className="mb-4 flex max-h-96 flex-col gap-3 overflow-y-auto">
           {messages.map((m) => (
             <div key={m.id} className={`max-w-full ${m.role === "user" ? "self-end" : "self-start"}`}>
               {m.role === "user" ? (
-                <p className="rounded-lg bg-zinc-800 px-3 py-2 text-sm text-zinc-100">{m.content}</p>
+                <p className="rounded-lg bg-zinc-200 px-3 py-2 text-sm text-zinc-900">{m.content}</p>
               ) : (
-                <div className="flex flex-col gap-2 rounded-lg bg-zinc-950 px-3 py-2">
-                  <span className="w-fit rounded-full border border-zinc-700 px-2 py-0.5 text-[10px] text-zinc-400">
+                <div className="flex flex-col gap-2 rounded-lg bg-zinc-50 px-3 py-2">
+                  <span className="w-fit rounded-full border border-zinc-300 px-2 py-0.5 text-[10px] text-zinc-600">
                     {m.source === "vlm" ? "Qwen3-VL（画像）" : "gemma-4-12b（テキスト）"}
                   </span>
-                  <p className="text-sm leading-6 text-zinc-200">{m.content}</p>
+                  <p className="text-sm leading-6 text-zinc-800">{m.content}</p>
                   {m.citations.length > 0 && (
                     <div className="flex flex-wrap gap-3">
                       {m.citations.map((c) => (
@@ -120,7 +120,7 @@ export default function QaChat({
                           key={c.time}
                           type="button"
                           onClick={() => onSeek(c.time)}
-                          className="font-mono text-xs text-emerald-400 hover:underline"
+                          className="font-mono text-xs text-emerald-600 hover:underline"
                         >
                           {formatTime(c.time)}
                         </button>
@@ -132,7 +132,7 @@ export default function QaChat({
                       type="button"
                       onClick={() => void ask(m.question, true)}
                       disabled={asking}
-                      className="w-fit text-xs text-zinc-500 underline decoration-dotted hover:text-zinc-300 disabled:opacity-50"
+                      className="w-fit text-xs text-zinc-500 underline decoration-dotted hover:text-zinc-700 disabled:opacity-50"
                     >
                       画像で見直す
                     </button>
@@ -161,12 +161,12 @@ export default function QaChat({
           onChange={(e) => setQuestion(e.target.value)}
           placeholder="例: 手順3で入力した値は？"
           disabled={asking}
-          className="min-w-0 flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm outline-none placeholder:text-zinc-600 focus:border-zinc-500 disabled:opacity-50"
+          className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-zinc-50 px-3 py-2 text-sm outline-none placeholder:text-zinc-400 focus:border-zinc-500 disabled:opacity-50"
         />
         <button
           type="submit"
           disabled={asking}
-          className="rounded-lg bg-zinc-100 px-3 py-2 text-sm font-medium text-zinc-900 transition-colors hover:bg-white disabled:opacity-50"
+          className="rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-800 disabled:opacity-50"
         >
           {asking ? "…" : "質問する"}
         </button>
