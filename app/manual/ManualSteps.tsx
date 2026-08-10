@@ -4,7 +4,7 @@ import { useCallback, useState } from "react";
 import JSZip from "jszip";
 
 import { formatTime, stepImageFileName, toManualMarkdown } from "@/lib/manual";
-import type { ManualStepWithMeta } from "@/lib/types";
+import type { ManualIntent, ManualStepWithMeta } from "@/lib/types";
 
 import AnnotatedFrame from "./AnnotatedFrame";
 import { bakeAnnotatedPng } from "./bakeAnnotatedPng";
@@ -13,6 +13,7 @@ export default function ManualSteps({
   fileName,
   summary,
   steps,
+  intent,
   onSeek,
   annotating,
   onReannotate,
@@ -22,6 +23,8 @@ export default function ManualSteps({
   fileName: string;
   summary: string;
   steps: ManualStepWithMeta[];
+  /** 意図駆動モード（実況収録から）でのみ渡される。Markdown のタイトル・冒頭の章に使う */
+  intent?: ManualIntent | null;
   onSeek: (time: number) => void;
   /** スクリーンショット注釈サブエージェント（/api/manual/annotate）が実行中かどうか。
    * 進捗（周回・件数）はヘッダーの WorkflowHeader が表示するので、ここでは disabled 制御にのみ使う */
@@ -38,7 +41,12 @@ export default function ManualSteps({
     setZipping(true);
     try {
       const base = fileName.replace(/\.[^.]+$/, "") || "manual";
-      const markdown = toManualMarkdown({ title: `${base} の操作手順`, summary, steps });
+      const markdown = toManualMarkdown({
+        title: `${base} の操作手順`,
+        summary,
+        steps,
+        intent: intent ?? undefined,
+      });
 
       const zip = new JSZip();
       zip.file(`${base}.md`, markdown);
@@ -81,7 +89,7 @@ export default function ManualSteps({
     } finally {
       setZipping(false);
     }
-  }, [fileName, steps, summary]);
+  }, [fileName, steps, summary, intent]);
 
   const lightboxStep = lightboxIndex !== null ? steps[lightboxIndex] : undefined;
 

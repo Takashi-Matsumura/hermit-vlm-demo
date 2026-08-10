@@ -4,7 +4,7 @@
  * このファイルでは node:* を使わない。Utterance も lib/audio.ts ではなく lib/types.ts から
  * 型として取る（lib/audio.ts は node:child_process を引き込む）。
  */
-import type { ManualStepWithMeta, Utterance } from "@/lib/types";
+import type { ManualIntent, ManualStepWithMeta, Utterance } from "@/lib/types";
 
 export type MergedFrameTime = { time: number; fromUtterance: boolean };
 
@@ -110,17 +110,46 @@ export function stepImageFileName(step: ManualStepWithMeta, index: number): stri
  * 画像は同じ ZIP 内の images/ フォルダに配置する前提で、相対パス
  * `images/<ファイル名>` で参照する（サーバの絶対URLには依存しない。
  * ZIP を展開してどこに置いても、フォルダ構成ごと壊さなければ画像が表示される）。
+ *
+ * intent は意図駆動モード（実況収録から）でのみ渡される。省略時（完成動画モード）は
+ * これまでどおりの出力になる。GFM alert（`> [!WARNING]`）ではなく素の `> **注意**` を
+ * 使うのは、下の自動生成の注意書きと同じ記法にそろえ、どの Markdown ビューアで開いても
+ * 崩れないようにするため。
  */
 export function toManualMarkdown(input: {
   title: string;
   summary: string;
   steps: ManualStepWithMeta[];
+  intent?: ManualIntent;
 }): string {
-  const { title, summary, steps } = input;
+  const { title, summary, steps, intent } = input;
 
-  const lines: string[] = [`# ${title}`, "", "> この手順書は動画から自動生成されたものです。内容は必ず確認してください。", ""];
+  const lines: string[] = [
+    `# ${intent?.title || title}`,
+    "",
+    "> この手順書は動画から自動生成されたものです。内容は必ず確認してください。",
+    "",
+  ];
+
+  if (intent && (intent.audience || intent.goal)) {
+    lines.push("## このマニュアルについて", "");
+    if (intent.audience) lines.push(`- 対象読者: ${intent.audience}`);
+    if (intent.goal) lines.push(`- ゴール: ${intent.goal}`);
+    lines.push("");
+  }
+
+  if (intent && intent.prerequisites.length > 0) {
+    lines.push("## 前提条件", "");
+    for (const p of intent.prerequisites) lines.push(`- ${p}`);
+    lines.push("");
+  }
 
   if (summary) lines.push("## 概要", "", summary, "");
+
+  if (intent && intent.cautions.length > 0) {
+    for (const c of intent.cautions) lines.push(`> **注意** ${c.text}`, ">");
+    lines.push("");
+  }
 
   lines.push("## 手順", "");
   steps.forEach((step, i) => {
@@ -131,9 +160,12 @@ export function toManualMarkdown(input: {
       "",
       step.description,
       "",
-      `_動画 ${formatTime(step.time)} 付近_`,
-      "",
     );
+    if (step.cautions) {
+      for (const c of step.cautions) lines.push(`> **注意** ${c.text}`, ">");
+      lines.push("");
+    }
+    lines.push(`_動画 ${formatTime(step.time)} 付近_`, "");
   });
 
   return lines.join("\n");

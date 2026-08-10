@@ -8,13 +8,24 @@ import { readSse } from "@/lib/sse";
 import type {
   ManualAnalyzeEvent,
   ManualAnnotateEvent,
+  ManualIntent,
+  ManualNarratedEvent,
   ManualStepWithMeta,
   ManualVerifyEvent,
   SearchHit,
   Utterance,
 } from "@/lib/types";
-import { deriveWorkflow, IDLE_RUN, type AnalyzePhase, type SubAgentRun } from "@/lib/workflow";
+import {
+  deriveNarratedWorkflow,
+  deriveWorkflow,
+  IDLE_RUN,
+  narratedPhaseRank,
+  type AnalyzePhase,
+  type NarratedPhase,
+  type SubAgentRun,
+} from "@/lib/workflow";
 
+import ManualIntentView from "./ManualIntent";
 import ManualSteps from "./ManualSteps";
 import QaChat from "./QaChat";
 import WorkflowHeader from "./WorkflowHeader";
@@ -22,9 +33,12 @@ import WorkflowHeader from "./WorkflowHeader";
 type FrameItem = { time: number; text: string; imageUrl: string; fromUtterance: boolean };
 
 type Status = "idle" | "analyzing" | "done" | "error";
+/** edited = 完成動画から（既存）/ narrated = 実況収録から（意図駆動、新規） */
+type Mode = "edited" | "narrated";
 
 export default function ManualPage() {
   const [status, setStatus] = useState<Status>("idle");
+  const [mode, setMode] = useState<Mode>("edited");
   const [fileName, setFileName] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [dragging, setDragging] = useState(false);
@@ -38,6 +52,16 @@ export default function ManualPage() {
   // analyze の SSE で最後に届いたイベント種別。ワークフロー表示のフェーズ判定に使う
   // （frames.length と frameCount の枚数比較は、抽出失敗フレームがあると壊れるため使わない）
   const [phase, setPhase] = useState<AnalyzePhase>("");
+
+  // --- 実況収録モード（narrated）専用の状態。完成動画モードの状態とは混ぜない ---
+  const [narratedPhase, setNarratedPhase] = useState<NarratedPhase>("");
+  const [intent, setIntent] = useState<ManualIntent | null>(null);
+  const [chunkCount, setChunkCount] = useState<number>(0);
+  const [chunkDoneCount, setChunkDoneCount] = useState<number>(0);
+  const [plannedCount, setPlannedCount] = useState<number>(0);
+  const [captureTotal, setCaptureTotal] = useState<number>(0);
+  const [captureDoneCount, setCaptureDoneCount] = useState<number>(0);
+  const [narratedStepCount, setNarratedStepCount] = useState<number>(0);
 
   const [frames, setFrames] = useState<FrameItem[]>([]);
   const [summary, setSummary] = useState<string>("");
@@ -195,7 +219,8 @@ export default function ManualPage() {
     [annotate],
   );
 
-  const analyze = useCallback(async (file: File) => {
+  /** 完成動画モード（既存）。中身は無改修。 */
+  const analyzeEdited = useCallback(async (file: File) => {
     setStatus("analyzing");
     setFileName(file.name);
     setError("");
@@ -273,6 +298,116 @@ export default function ManualPage() {
     }
   }, [verify]);
 
+  /**
+   * 実況収録モード（意図駆動）。/api/manual/narrated/analyze の SSE を読む。
+   *
+   * chunk・capture・step は mapWithConcurrency による並列実行で完了順に届くため、
+   * narratedPhase の更新は last-wins ではなく narratedPhaseRank による最大値更新にする
+   * （でなければ後から届いた低ランクのイベントでワークフロー表示のフェーズが逆行する）。
+   *
+   * steps は result.json の最終配列と添字を一致させる必要がある（verify/annotate が
+   * index で突合するため）。narrated モードは手順ごとに並列で確定し、まれに1手順が
+   * まるごと省略されることがある（route.ts 参照）ので、受信順にそのまま積むのではなく
+   * event.index（= 計画項目の添字）でスパース配列に積み、done の時点で
+   * まとめて詰める。これはサーバの finalSteps = steps.filter(Boolean) と同じ操作なので、
+   * 同じ添字の並びになることが保証される。
+   */
+  const analyzeNarrated = useCallback(async (file: File) => {
+    setStatus("analyzing");
+    setFileName(file.name);
+    setError("");
+    setFrames([]);
+    setSummary("");
+    setSteps([]);
+    setUtterances([]);
+    setHits(null);
+    setFrameCount(0);
+    setDuration(0);
+    setUtteranceCount(0);
+    setUtteranceFrameCount(0);
+    setNarratedPhase("");
+    setIntent(null);
+    setChunkCount(0);
+    setChunkDoneCount(0);
+    setPlannedCount(0);
+    setCaptureTotal(0);
+    setCaptureDoneCount(0);
+    setNarratedStepCount(0);
+    activeIdRef.current = "";
+    setVerifyRun(IDLE_RUN);
+    setAnnotateRun(IDLE_RUN);
+
+    const formData = new FormData();
+    formData.append("video", file);
+
+    const collectedSteps: (ManualStepWithMeta | undefined)[] = [];
+
+    try {
+      const res = await fetch("/api/manual/narrated/analyze", { method: "POST", body: formData });
+      if (!res.body) throw new Error("レスポンスが空です");
+
+      await readSse<ManualNarratedEvent>(res.body, (event) => {
+        if (event.type !== "error") {
+          setNarratedPhase((prev) => (narratedPhaseRank(event.type) > narratedPhaseRank(prev) ? event.type : prev));
+        }
+
+        switch (event.type) {
+          case "info":
+            activeIdRef.current = event.id;
+            setAnalysisId(event.id);
+            setVideoUrl(event.videoUrl);
+            setDuration(event.duration);
+            setUtteranceCount(event.utteranceCount);
+            setChunkCount(event.chunkCount);
+            break;
+          case "utterances":
+            setUtterances(event.utterances);
+            break;
+          case "chunk":
+            setChunkDoneCount((prev) => prev + 1);
+            break;
+          case "intent":
+            setIntent(event.intent);
+            break;
+          case "plan":
+            setPlannedCount(event.planned.length);
+            break;
+          case "capture":
+            setCaptureTotal(event.total);
+            setCaptureDoneCount((prev) => prev + 1);
+            break;
+          case "step":
+            collectedSteps[event.index] = event.step;
+            setNarratedStepCount((prev) => prev + 1);
+            break;
+          case "summary":
+            setSummary(event.text);
+            break;
+          case "done":
+            setSteps(collectedSteps.filter((s): s is ManualStepWithMeta => s !== undefined));
+            setStatus("done");
+            void verify(event.id);
+            break;
+          case "error":
+            setError(event.message);
+            setStatus("error");
+            break;
+        }
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setStatus("error");
+    }
+  }, [verify]);
+
+  const analyze = useCallback(
+    (file: File) => {
+      if (mode === "edited") void analyzeEdited(file);
+      else void analyzeNarrated(file);
+    },
+    [mode, analyzeEdited, analyzeNarrated],
+  );
+
   /** 「注釈をやり直す」ボタン用。実行中の多重起動は防ぐ（スロットを食い潰さないため） */
   const reannotate = useCallback(() => {
     if (!analysisId || annotating) return;
@@ -340,28 +475,55 @@ export default function ManualPage() {
   const analyzing = status === "analyzing";
 
   // 動的なフェーズ文言はワークフロー表示（WorkflowHeader）に任せ、ここは確定した
-  // メタ情報だけを出す（analyzing 中は info 到着まで空文字のまま）
+  // メタ情報だけを出す（analyzing 中は info 到着まで空文字のまま）。
+  // frameCount/plannedCount はモード固有の概念なので、他方のモードの残留値を見せない。
   const metaLine = [
     duration > 0 && `${duration.toFixed(1)}秒`,
-    frameCount > 0 && `${frameCount}フレーム（うち発話区切れ ${utteranceFrameCount}）`,
+    mode === "edited" && frameCount > 0 && `${frameCount}フレーム（うち発話区切れ ${utteranceFrameCount}）`,
+    mode === "narrated" && plannedCount > 0 && `${plannedCount}項目`,
     utteranceCount > 0 && `発話 ${utteranceCount}件`,
   ]
     .filter(Boolean)
     .join(" · ");
 
-  const workflowSteps = deriveWorkflow({
-    status,
-    phase,
-    frameCount,
-    captionedCount: frames.length,
-    utteranceCount,
-    stepCount: steps.length,
-    verify: verifyRun,
-    annotate: annotateRun,
-  });
-  const captionStep = workflowSteps.find((s) => s.id === "caption");
-  const workflowProgress =
-    captionStep?.status === "running" && frameCount > 0 ? { done: frames.length, total: frameCount } : null;
+  const workflowSteps =
+    mode === "edited"
+      ? deriveWorkflow({
+          status,
+          phase,
+          frameCount,
+          captionedCount: frames.length,
+          utteranceCount,
+          stepCount: steps.length,
+          verify: verifyRun,
+          annotate: annotateRun,
+        })
+      : deriveNarratedWorkflow({
+          status,
+          phase: narratedPhase,
+          utteranceCount,
+          chunkCount,
+          chunkDoneCount,
+          plannedCount,
+          captureTotal,
+          captureDoneCount,
+          stepCount: narratedStepCount,
+          verify: verifyRun,
+          annotate: annotateRun,
+        });
+
+  const workflowProgress = (() => {
+    if (mode === "edited") {
+      const captionStep = workflowSteps.find((s) => s.id === "caption");
+      return captionStep?.status === "running" && frameCount > 0
+        ? { done: frames.length, total: frameCount }
+        : null;
+    }
+    const captureStep = workflowSteps.find((s) => s.id === "capture");
+    return captureStep?.status === "running" && captureTotal > 0
+      ? { done: captureDoneCount, total: captureTotal }
+      : null;
+  })();
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-zinc-900">
@@ -381,6 +543,35 @@ export default function ManualPage() {
 
         {status === "idle" ? (
           <section className="rounded-xl border border-zinc-200 bg-white p-6">
+            <div className="mb-4 flex gap-2" role="tablist" aria-label="入力モード">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "edited"}
+                onClick={() => setMode("edited")}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                  mode === "edited"
+                    ? "bg-zinc-900 text-zinc-100"
+                    : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+                }`}
+              >
+                完成動画から
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "narrated"}
+                onClick={() => setMode("narrated")}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                  mode === "narrated"
+                    ? "bg-zinc-900 text-zinc-100"
+                    : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+                }`}
+              >
+                実況収録から
+              </button>
+            </div>
+
             <label
               onDragOver={(e) => {
                 e.preventDefault();
@@ -408,10 +599,14 @@ export default function ManualPage() {
               <span className="text-sm text-zinc-700">
                 {dragging
                   ? "ここにドロップ"
-                  : "操作を声で説明しながら録画した画面録画をドロップ"}
+                  : mode === "edited"
+                    ? "操作を声で説明しながら録画した画面録画をドロップ"
+                    : "アプリを操作しながら実況したナレーション動画をドロップ"}
               </span>
               <span className="text-xs text-zinc-500">
-                発話の区切れ目でも画面を切り出すので、手順の粒度が細かくなります
+                {mode === "edited"
+                  ? "発話の区切れ目でも画面を切り出すので、手順の粒度が細かくなります"
+                  : "実況しながら収録した動画から、作成者の意図を汲んで手順書を作ります（文字起こし必須）"}
               </span>
               <input
                 type="file"
@@ -482,10 +677,13 @@ export default function ManualPage() {
                 className="h-auto max-h-[70vh] w-full rounded-xl border border-zinc-200 bg-black object-contain"
               />
 
+              {mode === "narrated" && intent && <ManualIntentView intent={intent} />}
+
               <ManualSteps
                 fileName={fileName}
                 summary={summary}
                 steps={steps}
+                intent={mode === "narrated" ? intent : undefined}
                 onSeek={seekTo}
                 annotating={annotating}
                 onReannotate={reannotate}

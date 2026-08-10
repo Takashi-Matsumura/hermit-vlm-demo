@@ -10,8 +10,11 @@ export type CaptionWithMeta = Caption & {
   embedding: number[];
 };
 
-/** フレームの選び方。scene = シーン検出 / interval = 等間隔へのフォールバック */
-export type FrameMethod = "scene" | "interval";
+/**
+ * フレームの選び方。scene = シーン検出 / interval = 等間隔へのフォールバック /
+ * planned = 意図駆動モードで手順の根拠区間から選んだもの（/api/manual/narrated/analyze）
+ */
+export type FrameMethod = "scene" | "interval" | "planned";
 
 /** whisper.cpp による音声の書き起こし1セグメント */
 export type Utterance = { start: number; end: number; text: string };
@@ -146,6 +149,46 @@ export type ManualStepWithMeta = ManualStep & {
    * 未実行なら undefined。任意プロパティなので既存 result.json はそのまま読める。
    */
   verification?: StepVerification;
+  /**
+   * 意図駆動モード（/api/manual/narrated/analyze）のみ。この手順の根拠になった
+   * 発話の添字範囲（result.utterances の添字、閉区間）。時刻ではなく添字で持つのは、
+   * 添字は 0..utterances.length-1 という有限集合と照合できるため
+   * （lib/intent.ts の設計方針を参照）。
+   */
+  sourceUtterances?: { from: number; to: number };
+  /** 意図駆動モードのみ。この手順に紐づく注意事項。紐づかないものは ManualIntent.cautions へ */
+  cautions?: Caution[];
+};
+
+/** 意図駆動モードで抽出した注意事項。根拠は発話の添字（時刻ではない） */
+export type Caution = {
+  text: string;
+  /** result.utterances の添字。閉区間 [from, to] */
+  from: number;
+  to: number;
+};
+
+/**
+ * 意図駆動モードのパス1（意図把握）の中間生成物。手順の骨格だが、
+ * まだ画像も本文も無い。from/to は発話の添字（閉区間）で、時刻は持たない
+ * （時刻を LLM に発明させないという lib/intent.ts の方針による）。
+ */
+export type PlannedStep = {
+  title: string;
+  /** この項目で作成者が読者に伝えたいこと */
+  intent: string;
+  from: number;
+  to: number;
+};
+
+/** 意図駆動モードで gemma が最初に作る「マニュアルの設計図」 */
+export type ManualIntent = {
+  title: string;
+  audience: string;
+  goal: string;
+  prerequisites: string[];
+  /** どの手順にも紐づかなかった、マニュアル全体に関わる注意事項 */
+  cautions: Caution[];
 };
 
 /**
@@ -163,6 +206,13 @@ export type ManualResult = AnalysisResult & {
    * 「注釈をやり直す」際に ffmpeg での再検出を省略できるようにする。
    */
   contentBox?: NormalizedBox;
+  /**
+   * 意図駆動モード（/api/manual/narrated/analyze）でのみ入る。
+   * 完成動画モードの既存 result.json には無いので任意プロパティ。
+   */
+  intent?: ManualIntent;
+  /** "edited" = 完成動画から（既定） / "narrated" = 実況収録から。未指定は edited 扱い */
+  mode?: "edited" | "narrated";
 };
 
 /**
@@ -242,4 +292,42 @@ export type ManualVerifyEvent =
     }
   | { type: "round-done"; round: number; fixed: number; remaining: number }
   | { type: "done"; totalFixed: number; needsReview: number }
+  | { type: "error"; message: string };
+
+/**
+ * /api/manual/narrated/analyze（意図駆動モード）が SSE で流すイベント。
+ * ManualAnalyzeEvent とは別 union にしてある。info は frameCount を持てない
+ * （フレーム数が意図把握の後でないと決まらないため）ので、同じ判別子で
+ * 違う形のバリアントを共存させられないという lib/types.ts の既存方針上、
+ * 分離が必須になる。
+ */
+export type ManualNarratedEvent =
+  | {
+      type: "info";
+      id: string;
+      videoUrl: string;
+      duration: number;
+      utteranceCount: number;
+      chunkCount: number;
+    }
+  | { type: "utterances"; utterances: Utterance[] }
+  | { type: "chunk"; index: number; total: number; items: number }
+  | { type: "intent"; intent: ManualIntent }
+  | { type: "plan"; planned: PlannedStep[] }
+  | {
+      type: "capture";
+      stepIndex: number;
+      total: number;
+      time: number;
+      imageUrl: string;
+      text: string;
+    }
+  | {
+      type: "step";
+      /** planned 配列の添字。手順ごとに独立・並列で確定するので順不同で届く。突合はこれで行う */
+      index: number;
+      step: ManualStepWithMeta;
+    }
+  | { type: "summary"; text: string }
+  | { type: "done"; id: string }
   | { type: "error"; message: string };

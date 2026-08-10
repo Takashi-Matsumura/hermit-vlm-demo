@@ -297,6 +297,146 @@ function concatManualSteps(steps: ManualStep[]): Pick<ManualStep, "title" | "des
   };
 }
 
+/**
+ * 意図駆動モード（/api/manual/narrated/analyze）のパス1・mapフェーズ。
+ * 発話のチャンク1つぶんから、作成者が伝えたい内容を項目に分ける。
+ *
+ * 発話には時刻を付けずに渡す。実測で、時刻を渡すとモデルが time を出力したがり、
+ * プロンプトも長くなった（時刻付き2,456トークン→添字のみ1,521トークン）。
+ * 添字は範囲外・重複を機械的に検証できるが、時刻は「もっともらしい値」を
+ * 生成されても検証できないため、この設計にしている。
+ *
+ * 「この区間の発話をできるだけ漏れなく、どれかの項目に含めてください」という1文は
+ * 実測で被覆率を大きく左右した（この指示なしで発話400件を一括投入すると被覆21%、
+ * 90件程度に分けてこの指示を入れると被覆100%になった）。
+ *
+ * 戻り値は生のモデル出力（未パース）。妥当性検証は lib/intent.ts の parseOutlineChunk
+ * が担う（annotateStepTarget 等の既存サブエージェント系関数と同じ契約）。
+ */
+export async function outlineUtteranceChunk(input: { lines: string; from: number; to: number }): Promise<string> {
+  const { lines, from, to } = input;
+
+  return chat(
+    `以下は、PCの操作画面を録画しながら操作者が話した内容の書き起こしです。\n` +
+      `行頭の [番号] は動画全体を通した発話の通し番号で、今回渡すのは ${from} から ${to} までの区間だけです` +
+      `（0から始まっていません。この範囲の外の番号は使わないでください）。\n\n${lines}\n\n` +
+      `この動画の作成者が、この区間で読者に伝えたいことを、意味のまとまりごとに項目に分けてください。\n` +
+      `この区間の発話をできるだけ漏れなく、どれかの項目に含めてください。挨拶や雑談だけの発話は含めなくてかまいません。\n` +
+      `各項目には、その内容が含まれる発話番号の最小値を from、最大値を to として付けてください` +
+      `（from・to は必ず ${from} 〜 ${to} の範囲内の整数にしてください）。時刻や秒数は書かないでください。\n` +
+      `title は項目の短い見出し（20文字以内）、intent はこの項目で作成者が伝えたいこと（1〜2文）にしてください。\n` +
+      `操作者が注意・警告として述べた内容（「〜すると失敗します」「〜しないでください」など）は` +
+      `項目には含めず、cautions として別に抜き出してください。\n` +
+      `書き起こしに書かれていない内容を推測して補わないでください。\n` +
+      `JSONオブジェクトだけを出力してください。形式は\n` +
+      `{"outline":[{"title":"見出し","intent":"伝えたいこと","from":番号,"to":番号}],` +
+      `"cautions":[{"text":"注意事項","from":番号,"to":番号}]}\n` +
+      `です。説明文やコードブロックは不要です。`,
+    900,
+  );
+}
+
+/**
+ * 意図駆動モード・パス1のreduceフェーズ。map フェーズで出た局所アウトライン項目を
+ * 統合し、マニュアル全体の設計図（タイトル・対象読者・ゴール・前提条件）と、
+ * 項目のグルーピングを決める。
+ *
+ * from/to はこの関数には書かせない。実測で、時間範囲の算術をモデルにやらせると
+ * "9-150" と "20-99" のような重複・非単調な範囲を返した。ここでは「どの局所項目を
+ * まとめるか」（members = 局所項目の添字）だけを決めさせ、実際の from/to の計算は
+ * lib/intent.ts の normalizeOutlineGroups が行う。
+ *
+ * 戻り値は生のモデル出力（未パース）。妥当性検証は lib/intent.ts の parseOutlineReduce。
+ */
+export async function reduceManualOutline(input: { items: string }): Promise<string> {
+  return chat(
+    `以下は、ある動画から作っている操作マニュアルの局所的なアウトライン項目です。` +
+      `行頭の # に続く番号は項目の通し番号です（0から始まります）。時間順に並んでいます。\n\n` +
+      `${input.items}\n\n` +
+      `この動画の作成者が伝えたいマニュアル全体の設計図を作ってください。\n` +
+      `1. マニュアル全体のタイトル（title）\n` +
+      `2. 想定読者（audience）。書かれていなければ空文字でかまいません\n` +
+      `3. このマニュアルのゴール（goal）。書かれていなければ空文字でかまいません\n` +
+      `4. 事前に必要な準備・前提条件（prerequisites。無ければ空配列）\n` +
+      `5. 上の項目のうち、同じ操作対象・同じ画面に対するものをまとめたグループ（groups）。` +
+      `1つのグループにまとめる項目が無ければ、その項目だけの1件グループにしてください` +
+      `（すべての項目がどこかのグループに1回だけ属するようにしてください）。\n` +
+      `グループには、含めた項目の番号を members として列挙してください（時刻や秒数は書かないでください）。\n` +
+      `グループの title は「〜する」で終わる短い命令形、intent はこのグループで伝えたいことです。\n` +
+      `書かれていない内容を推測して補わないでください。\n` +
+      `JSONオブジェクトだけを出力してください。形式は\n` +
+      `{"title":"マニュアルのタイトル","audience":"想定読者","goal":"ゴール",` +
+      `"prerequisites":["前提条件"],` +
+      `"groups":[{"title":"グループの見出し","intent":"伝えたいこと","members":[0,1]}]}\n` +
+      `です。説明文やコードブロックは不要です。`,
+    800,
+  );
+}
+
+/**
+ * 意図駆動モード・パス2。計画された1手順ぶんの根拠発話とフレーム説明から、
+ * 手順の本文（title/description）を書く。
+ *
+ * generateManualSteps と違い time を書かせない。時刻は selectPlannedFrameTimes が
+ * 決めた実在フレーム時刻をそのまま使うので、時刻をモデルに発明させる余地を無くしてある
+ * （README に記録されている、モデルの time を無条件に最近傍フレームへスナップするという
+ * 既存の構造的問題を、意図駆動モードでは最初から作らない）。
+ *
+ * mergeManualSteps と同じく、パースに失敗したら機械的なフォールバックにする
+ * （合成できなくても、根拠発話の情報は落とさない）。
+ */
+export async function writeNarratedStep(input: {
+  planTitle: string;
+  planIntent: string;
+  utteranceText: string;
+  frameCaptions: string[];
+}): Promise<Pick<ManualStep, "title" | "description">> {
+  const { planTitle, planIntent, utteranceText, frameCaptions } = input;
+
+  const captionsBlock =
+    frameCaptions.length > 0
+      ? `\n\n# この区間のフレームに写っているもの\n${frameCaptions.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
+      : "";
+
+  const raw = await chat(
+    `以下は、PCの操作画面を録画しながら操作者が話した動画から作っている操作マニュアルの、\n` +
+      `1つの手順に対応する区間です。\n\n` +
+      `この区間の見出し: 「${planTitle}」\n` +
+      `この区間で伝えたいこと: 「${planIntent}」\n\n` +
+      `# 発話の書き起こし\n${utteranceText}` +
+      captionsBlock +
+      `\n\nこの区間の手順を書いてください。\n` +
+      `「発話の書き起こし」は操作者本人の説明です。何をしているか、なぜそうするのかは必ずこちらを根拠にしてください。\n` +
+      `「フレームに写っているもの」は音声では言っていないボタン名・メニュー名・入力値を補うために使ってください。\n` +
+      `title は「〜をクリックする」のように動作が分かる短い命令形（30文字以内）にしてください。\n` +
+      `description は1〜3文で、何をするかに加えて、理由が語られていればそれも書いてください。\n` +
+      `画面上の名前は書かれているとおりに書き写し、書かれていない名前や数値を推測して補わないでください。\n` +
+      `JSONオブジェクトだけを出力してください。形式は {"title": "手順のタイトル", "description": "手順の説明"} です。` +
+      `説明文やコードブロックは不要です。`,
+    500,
+  );
+
+  try {
+    // モデルが```jsonフェンスや前置きを付けることがあるのでオブジェクト部分だけ取り出す
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error("JSONオブジェクトが見つかりません");
+
+    const parsed: unknown = JSON.parse(match[0]);
+    if (typeof parsed !== "object" || parsed === null) throw new Error("オブジェクトではありません");
+
+    const { title, description } = parsed as Partial<ManualStep>;
+    if (typeof title !== "string" || typeof description !== "string") {
+      throw new Error("title / description がありません");
+    }
+    if (title.trim().length === 0) throw new Error("title が空です");
+
+    return { title: title.trim(), description: description.trim() };
+  } catch {
+    // 合成に失敗しても、根拠発話の文章は落とさない（concatManualSteps と同じ考え方）
+    return { title: planTitle, description: utteranceText };
+  }
+}
+
 /** シーン説明のテキストだけでは答えられないとき、gemma にこの合図を出させる */
 export const NEED_IMAGE_SENTINEL = "NEED_IMAGE";
 
