@@ -1,11 +1,11 @@
 import type { WorkflowStepView } from "@/lib/workflow";
 
 const TEXT_CLASS: Record<WorkflowStepView["status"], string> = {
-  pending: "text-zinc-600",
-  running: "text-emerald-300",
-  done: "text-zinc-300",
-  skipped: "text-zinc-600",
-  failed: "text-red-300",
+  pending: "text-zinc-400",
+  running: "text-emerald-600",
+  done: "text-zinc-700",
+  skipped: "text-zinc-400",
+  failed: "text-red-600",
 };
 
 const STATUS_LABEL: Record<WorkflowStepView["status"], string> = {
@@ -20,7 +20,7 @@ function StatusIcon({ status }: { status: WorkflowStepView["status"] }) {
   if (status === "done") {
     return (
       <svg
-        className="mt-0.5 h-3 w-3 shrink-0 text-emerald-400"
+        className="mt-0.5 h-3 w-3 shrink-0 text-emerald-600"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
@@ -34,7 +34,7 @@ function StatusIcon({ status }: { status: WorkflowStepView["status"] }) {
   if (status === "failed") {
     return (
       <svg
-        className="mt-0.5 h-3 w-3 shrink-0 text-red-400"
+        className="mt-0.5 h-3 w-3 shrink-0 text-red-600"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
@@ -48,15 +48,15 @@ function StatusIcon({ status }: { status: WorkflowStepView["status"] }) {
   if (status === "running") {
     return (
       <span
-        className="mt-1 h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-400 ring-2 ring-emerald-500/30"
+        className="mt-1 h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500 ring-2 ring-emerald-500/30"
         aria-hidden="true"
       />
     );
   }
   if (status === "skipped") {
-    return <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-zinc-700" aria-hidden="true" />;
+    return <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-zinc-300" aria-hidden="true" />;
   }
-  return <span className="mt-1 h-2 w-2 shrink-0 rounded-full border border-zinc-600" aria-hidden="true" />;
+  return <span className="mt-1 h-2 w-2 shrink-0 rounded-full border border-zinc-400" aria-hidden="true" />;
 }
 
 function Row({ title, steps }: { title: string; steps: WorkflowStepView[] }) {
@@ -71,7 +71,7 @@ function Row({ title, steps }: { title: string; steps: WorkflowStepView[] }) {
             aria-label={`${step.label}: ${STATUS_LABEL[step.status]}${step.detail ? ` ${step.detail}` : ""}`}
           >
             {/* 折り返した行の先頭に線が残らないよう、狭い画面では接続線を出さない */}
-            {i > 0 && <span aria-hidden="true" className="mt-2 hidden h-px w-5 shrink-0 bg-zinc-700 sm:block" />}
+            {i > 0 && <span aria-hidden="true" className="mt-2 hidden h-px w-5 shrink-0 bg-zinc-300 sm:block" />}
             <span className="flex items-start gap-1.5">
               <StatusIcon status={step.status} />
               <span className="flex min-w-0 flex-col leading-tight">
@@ -79,7 +79,7 @@ function Row({ title, steps }: { title: string; steps: WorkflowStepView[] }) {
                   {step.label}
                   {step.detail && <span className="ml-1.5 font-mono text-[10px] text-zinc-500">{step.detail}</span>}
                 </span>
-                <span className="mt-0.5 text-[10px] text-zinc-600">{step.model}</span>
+                <span className="mt-0.5 text-[10px] text-zinc-400">{step.model}</span>
               </span>
             </span>
           </li>
@@ -106,15 +106,15 @@ export default function WorkflowHeader({
   const subSteps = steps.filter((s) => s.tier === "sub");
 
   return (
-    <div className="mt-4 border-t border-zinc-800 pt-4">
+    <div className="mt-4 border-t border-zinc-200 pt-4">
       <h3 className="mb-3 text-[10px] tracking-wide text-zinc-500">ワークフロー</h3>
       <div className="flex flex-col gap-3">
         <Row title="メインエージェント" steps={mainSteps} />
-        <div className="h-px bg-zinc-800/80" />
+        <div className="h-px bg-zinc-200/80" />
         <Row title="サブエージェント" steps={subSteps} />
       </div>
       {progress && progress.total > 0 && (
-        <div className="mt-3 h-1 w-full overflow-hidden rounded bg-zinc-800">
+        <div className="mt-3 h-1 w-full overflow-hidden rounded bg-zinc-200">
           <div
             className="h-full bg-emerald-500 transition-all duration-300"
             style={{ width: `${(progress.done / progress.total) * 100}%` }}
