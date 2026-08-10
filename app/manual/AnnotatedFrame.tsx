@@ -9,7 +9,7 @@ import type { StepAnnotation } from "@/lib/types";
  *
  * 座標計算は lib/annotation.ts の annotationGeometry に一本化してあるので、
  * ここでの責務は「その結果をどう描くか」だけ。ZIP エクスポート側の
- * bakeAnnotatedPng（Canvas 焼き込み）も同じ関数を使うので、画面表示と
+ * bakeAnnotatedSvg（SVG 焼き込み）も同じ関数を使うので、画面表示と
  * エクスポートで枠の位置・太さが食い違うことはない。
  *
  * compact（一覧サムネ用）: 太さを画面ピクセル固定にし、バッジは描かない
