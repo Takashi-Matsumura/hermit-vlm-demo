@@ -13,9 +13,11 @@ import type {
   SearchHit,
   Utterance,
 } from "@/lib/types";
+import { deriveWorkflow, IDLE_RUN, type AnalyzePhase, type SubAgentRun } from "@/lib/workflow";
 
 import ManualSteps from "./ManualSteps";
 import QaChat from "./QaChat";
+import WorkflowHeader from "./WorkflowHeader";
 
 type FrameItem = { time: number; text: string; imageUrl: string; fromUtterance: boolean };
 
@@ -33,6 +35,9 @@ export default function ManualPage() {
   const [frameCount, setFrameCount] = useState<number>(0);
   const [utteranceCount, setUtteranceCount] = useState<number>(0);
   const [utteranceFrameCount, setUtteranceFrameCount] = useState<number>(0);
+  // analyze の SSE で最後に届いたイベント種別。ワークフロー表示のフェーズ判定に使う
+  // （frames.length と frameCount の枚数比較は、抽出失敗フレームがあると壊れるため使わない）
+  const [phase, setPhase] = useState<AnalyzePhase>("");
 
   const [frames, setFrames] = useState<FrameItem[]>([]);
   const [summary, setSummary] = useState<string>("");
@@ -43,19 +48,11 @@ export default function ManualPage() {
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
 
-  const [annotating, setAnnotating] = useState(false);
-  const [annotateProgress, setAnnotateProgress] = useState<{ round: number; done: number; total: number }>({
-    round: 0,
-    done: 0,
-    total: 0,
-  });
-
-  const [verifying, setVerifying] = useState(false);
-  const [verifyProgress, setVerifyProgress] = useState<{ round: number; done: number; total: number }>({
-    round: 0,
-    done: 0,
-    total: 0,
-  });
+  const [annotateRun, setAnnotateRun] = useState<SubAgentRun>(IDLE_RUN);
+  const [verifyRun, setVerifyRun] = useState<SubAgentRun>(IDLE_RUN);
+  // ManualSteps 等、既存の呼び出し側との互換のためのローカル派生値
+  const annotating = annotateRun.state === "running";
+  const verifying = verifyRun.state === "running";
 
   const videoRef = useRef<HTMLVideoElement>(null);
   // annotate の SSE が別の動画に切り替わった後まで届いた場合に、無関係な steps を
@@ -79,8 +76,7 @@ export default function ManualPage() {
    * 最良の注釈」が入っている（N周目が見つからなくても、前周の正しい枠を消さない）。
    */
   const annotate = useCallback(async (id: string) => {
-    setAnnotating(true);
-    setAnnotateProgress({ round: 0, done: 0, total: 0 });
+    setAnnotateRun({ state: "running", round: 0, done: 0, total: 0 });
 
     try {
       const res = await fetch("/api/manual/annotate", {
@@ -95,11 +91,14 @@ export default function ManualPage() {
         if (activeIdRef.current !== id) return;
 
         switch (event.type) {
+          case "start":
+            setAnnotateRun((prev) => ({ ...prev, rounds: event.rounds }));
+            break;
           case "round-start":
-            setAnnotateProgress({ round: event.round, done: 0, total: event.targets });
+            setAnnotateRun((prev) => ({ ...prev, round: event.round, done: 0, total: event.targets }));
             break;
           case "annotation":
-            setAnnotateProgress((prev) => ({ ...prev, done: prev.done + 1 }));
+            setAnnotateRun((prev) => ({ ...prev, done: prev.done + 1 }));
             // index で突合する（time ではない）。手順統合に失敗したグループでは
             // 同じ time の手順が複数残りうるため
             setSteps((prev) =>
@@ -108,17 +107,24 @@ export default function ManualPage() {
               ),
             );
             break;
-          case "start":
-          case "round-done":
           case "done":
+            setAnnotateRun((prev) => ({ ...prev, state: "done", result: `注釈 ${event.annotated}件` }));
+            break;
           case "error":
+            setAnnotateRun((prev) => ({ ...prev, state: "failed" }));
+            break;
+          case "round-done":
             break;
         }
       });
     } catch (e) {
       console.error("[manual] 注釈の生成に失敗しました:", e);
     } finally {
-      if (activeIdRef.current === id) setAnnotating(false);
+      // done/error イベントで既に確定済みなら上書きしない。ストリームが完了扱いになった
+      // のに running のままなら（例: 400/404 でイベントが1件も来なかった場合）失敗とみなす
+      if (activeIdRef.current === id) {
+        setAnnotateRun((prev) => (prev.state === "running" ? { ...prev, state: "failed" } : prev));
+      }
     }
   }, []);
 
@@ -130,8 +136,7 @@ export default function ManualPage() {
    */
   const verify = useCallback(
     async (id: string) => {
-      setVerifying(true);
-      setVerifyProgress({ round: 0, done: 0, total: 0 });
+      setVerifyRun({ state: "running", round: 0, done: 0, total: 0 });
 
       try {
         const res = await fetch("/api/manual/verify", {
@@ -146,10 +151,10 @@ export default function ManualPage() {
 
           switch (event.type) {
             case "round-start":
-              setVerifyProgress({ round: event.round, done: 0, total: event.targets });
+              setVerifyRun((prev) => ({ ...prev, round: event.round, done: 0, total: event.targets }));
               break;
             case "verification":
-              setVerifyProgress((prev) => ({ ...prev, done: prev.done + 1 }));
+              setVerifyRun((prev) => ({ ...prev, done: prev.done + 1 }));
               // index で突合する（time ではない。annotate と同じ理由）
               setSteps((prev) =>
                 prev.map((step, i) =>
@@ -166,16 +171,22 @@ export default function ManualPage() {
                 ),
               );
               break;
-            case "round-done":
             case "done":
+              setVerifyRun((prev) => ({ ...prev, state: "done", result: `差し替え ${event.totalFixed}件` }));
+              break;
             case "error":
+              setVerifyRun((prev) => ({ ...prev, state: "failed" }));
+              break;
+            case "round-done":
               break;
           }
         });
       } catch (e) {
         console.error("[manual] スクリーンショットの検証に失敗しました:", e);
       } finally {
-        if (activeIdRef.current === id) setVerifying(false);
+        if (activeIdRef.current === id) {
+          setVerifyRun((prev) => (prev.state === "running" ? { ...prev, state: "failed" } : prev));
+        }
       }
 
       // verify が失敗しても、まだ意味のあるスクリーンショットには注釈を付けたいので続行する
@@ -197,12 +208,11 @@ export default function ManualPage() {
     setDuration(0);
     setUtteranceCount(0);
     setUtteranceFrameCount(0);
+    setPhase("");
     // 前の動画のサブエージェントがまだ走っていても、その結果は新しい動画に適用しない
     activeIdRef.current = "";
-    setVerifying(false);
-    setVerifyProgress({ round: 0, done: 0, total: 0 });
-    setAnnotating(false);
-    setAnnotateProgress({ round: 0, done: 0, total: 0 });
+    setVerifyRun(IDLE_RUN);
+    setAnnotateRun(IDLE_RUN);
 
     const formData = new FormData();
     formData.append("video", file);
@@ -212,6 +222,9 @@ export default function ManualPage() {
       if (!res.body) throw new Error("レスポンスが空です");
 
       await readSse<ManualAnalyzeEvent>(res.body, (event) => {
+        // ワークフロー表示のフェーズ判定用。error は含めない（失敗直前の到達点を保持するため）
+        if (event.type !== "error") setPhase(event.type);
+
         switch (event.type) {
           case "info":
             activeIdRef.current = event.id;
@@ -326,22 +339,29 @@ export default function ManualPage() {
 
   const analyzing = status === "analyzing";
 
-  const statusLine = analyzing
-    ? frameCount === 0
-      ? "音声を文字起こししています…"
-      : frames.length < frameCount
-        ? `画面を解析中… ${frames.length} / ${frameCount} フレーム`
-        : "手順をまとめています…"
-    : status === "error"
-      ? "解析に失敗しました"
-      : [
-          duration > 0 && `${duration.toFixed(1)}秒`,
-          frameCount > 0 &&
-            `${frameCount}フレーム（うち発話区切れ ${utteranceFrameCount}）`,
-          utteranceCount > 0 && `発話 ${utteranceCount}件`,
-        ]
-          .filter(Boolean)
-          .join(" · ");
+  // 動的なフェーズ文言はワークフロー表示（WorkflowHeader）に任せ、ここは確定した
+  // メタ情報だけを出す（analyzing 中は info 到着まで空文字のまま）
+  const metaLine = [
+    duration > 0 && `${duration.toFixed(1)}秒`,
+    frameCount > 0 && `${frameCount}フレーム（うち発話区切れ ${utteranceFrameCount}）`,
+    utteranceCount > 0 && `発話 ${utteranceCount}件`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const workflowSteps = deriveWorkflow({
+    status,
+    phase,
+    frameCount,
+    captionedCount: frames.length,
+    utteranceCount,
+    stepCount: steps.length,
+    verify: verifyRun,
+    annotate: annotateRun,
+  });
+  const captionStep = workflowSteps.find((s) => s.id === "caption");
+  const workflowProgress =
+    captionStep?.status === "running" && frameCount > 0 ? { done: frames.length, total: frameCount } : null;
 
   return (
     <div className="min-h-screen bg-zinc-950 font-sans text-zinc-100">
@@ -418,7 +438,7 @@ export default function ManualPage() {
                 </svg>
                 <div className="min-w-0">
                   <h2 className="truncate text-sm font-medium text-zinc-100">{fileName}</h2>
-                  <p className="mt-0.5 text-xs text-zinc-500">{statusLine}</p>
+                  {metaLine && <p className="mt-0.5 text-xs text-zinc-500">{metaLine}</p>}
                 </div>
               </div>
 
@@ -434,14 +454,7 @@ export default function ManualPage() {
               </label>
             </div>
 
-            {analyzing && frameCount > 0 && (
-              <div className="mt-3 h-1 w-full overflow-hidden rounded bg-zinc-800">
-                <div
-                  className="h-full bg-emerald-500 transition-all duration-300"
-                  style={{ width: `${(frames.length / frameCount) * 100}%` }}
-                />
-              </div>
-            )}
+            <WorkflowHeader steps={workflowSteps} progress={workflowProgress} />
           </section>
         )}
 
@@ -475,10 +488,8 @@ export default function ManualPage() {
                 steps={steps}
                 onSeek={seekTo}
                 annotating={annotating}
-                annotateProgress={annotateProgress}
                 onReannotate={reannotate}
                 verifying={verifying}
-                verifyProgress={verifyProgress}
                 onReverify={reverify}
               />
 

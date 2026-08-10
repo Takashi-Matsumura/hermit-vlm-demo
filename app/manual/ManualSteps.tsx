@@ -15,23 +15,20 @@ export default function ManualSteps({
   steps,
   onSeek,
   annotating,
-  annotateProgress,
   onReannotate,
   verifying,
-  verifyProgress,
   onReverify,
 }: {
   fileName: string;
   summary: string;
   steps: ManualStepWithMeta[];
   onSeek: (time: number) => void;
-  /** スクリーンショット注釈サブエージェント（/api/manual/annotate）が実行中かどうか */
+  /** スクリーンショット注釈サブエージェント（/api/manual/annotate）が実行中かどうか。
+   * 進捗（周回・件数）はヘッダーの WorkflowHeader が表示するので、ここでは disabled 制御にのみ使う */
   annotating: boolean;
-  annotateProgress: { round: number; done: number; total: number };
   onReannotate: () => void;
   /** スクリーンショット検証サブエージェント（/api/manual/verify）が実行中かどうか */
   verifying: boolean;
-  verifyProgress: { round: number; done: number; total: number };
   onReverify: () => void;
 }) {
   const [zipping, setZipping] = useState(false);
@@ -93,35 +90,27 @@ export default function ManualSteps({
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-medium text-zinc-400">操作手順</h2>
         <div className="flex items-center gap-2">
-          {verifying ? (
-            <span className="text-xs text-zinc-500">
-              スクリーンショット検証中… {verifyProgress.round}周目 {verifyProgress.done} /{" "}
-              {verifyProgress.total}
-            </span>
-          ) : annotating ? (
-            <span className="text-xs text-zinc-500">
-              注釈サブエージェント実行中… {annotateProgress.round}周目 {annotateProgress.done} /{" "}
-              {annotateProgress.total}
-            </span>
-          ) : (
-            steps.length > 0 && (
-              <>
-                <button
-                  type="button"
-                  onClick={onReverify}
-                  className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800"
-                >
-                  検証をやり直す
-                </button>
-                <button
-                  type="button"
-                  onClick={onReannotate}
-                  className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800"
-                >
-                  注釈をやり直す
-                </button>
-              </>
-            )
+          {/* 実行中の進捗はヘッダーの WorkflowHeader が表示するので、ここはボタンを常時
+              出したまま disabled で制御する（実行中にボタンが消えてレイアウトが跳ねるのを防ぐ） */}
+          {steps.length > 0 && (
+            <>
+              <button
+                type="button"
+                onClick={onReverify}
+                disabled={verifying || annotating}
+                className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                検証をやり直す
+              </button>
+              <button
+                type="button"
+                onClick={onReannotate}
+                disabled={verifying || annotating}
+                className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                注釈をやり直す
+              </button>
+            </>
           )}
           <button
             type="button"
