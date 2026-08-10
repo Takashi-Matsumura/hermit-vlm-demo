@@ -7,7 +7,7 @@ import { formatTime, stepImageFileName, toManualMarkdown } from "@/lib/manual";
 import type { ManualIntent, ManualStepWithMeta } from "@/lib/types";
 
 import AnnotatedFrame from "./AnnotatedFrame";
-import { bakeAnnotatedPng } from "./bakeAnnotatedPng";
+import { bakeAnnotatedSvg } from "./bakeAnnotatedSvg";
 
 export default function ManualSteps({
   fileName,
@@ -54,7 +54,8 @@ export default function ManualSteps({
 
       // 画像は同一オリジンの /uploads/<id>/frames/*.png なので fetch できる。
       // 1枚取得に失敗しても他の画像・Markdown本体は諦めずに ZIP に含める。
-      // 注釈があれば Canvas で焼き込んだものを入れ、焼き込みに失敗したら元画像にフォールバックする
+      // 注釈があれば元 PNG を埋め込みつつ赤枠・番号バッジをベクターで焼き込んだ SVG を入れ、
+      // 焼き込みに失敗したら元 PNG にフォールバックする
       // （Markdown の画像リンクを死なせないことを最優先する）。
       await Promise.all(
         steps.map(async (step, index) => {
@@ -62,7 +63,7 @@ export default function ManualSteps({
           try {
             if (step.annotation) {
               try {
-                images?.file(name, await bakeAnnotatedPng(step.imageUrl, step.annotation));
+                images?.file(name, await bakeAnnotatedSvg(step.imageUrl, step.annotation));
                 return;
               } catch (error) {
                 console.error(`[manual] 注釈の焼き込みに失敗しました（${step.imageUrl}）:`, error);
@@ -70,7 +71,11 @@ export default function ManualSteps({
             }
             const res = await fetch(step.imageUrl);
             if (!res.ok) throw new Error(`${step.imageUrl} が ${res.status} を返しました`);
-            images?.file(name, await res.blob());
+            // SVG 焼き込みに失敗したときの name は .svg 拡張子のままなので、
+            // 実際に書き込む内容（元 PNG バイナリ）に合わせて戻す
+            // （この場合 Markdown 側のリンクは死ぬが、画像自体を諦めるよりはまし）。
+            const fallbackName = step.annotation ? name.replace(/\.svg$/i, ".png") : name;
+            images?.file(fallbackName, await res.blob());
           } catch (error) {
             console.error(`[manual] 画像の取得に失敗しました（${step.imageUrl}）:`, error);
           }

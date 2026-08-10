@@ -2,7 +2,7 @@
  * スクリーンショット注釈サブエージェント（/api/manual/annotate）まわりの純粋関数。
  *
  * node:* も DOM API も使わない。サーバ（annotate route）・SVG オーバーレイ（AnnotatedFrame）・
- * Canvas 焼き込み（bakeAnnotatedPng）の3者が、座標計算をここ1箇所に集約して共有する。
+ * ZIP 書き出し用の SVG 焼き込み（bakeAnnotatedSvg）の3者が、座標計算をここ1箇所に集約して共有する。
  * import type しか使わないので `node --test` でバンドラ無しに実行できる。
  *
  * crop-and-zoom による3周ループ（レターボックス除去 + 段階的な位置の絞り込み）を

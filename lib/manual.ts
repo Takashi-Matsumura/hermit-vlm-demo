@@ -99,9 +99,15 @@ export function frameFileName(imageUrl: string): string {
  * (1) 同じフレームを指す手順が複数あるとき、注釈違いの画像が上書きされないようにするため
  *     （mergeManualSteps が失敗したグループでは同じ imageUrl の手順が複数残る）
  * (2) 展開したときに images/ が手順順に並ぶため
+ *
+ * 注釈があるステップは拡張子を .svg にする。ZIP 書き出し（bakeAnnotatedSvg）が
+ * 元 PNG を埋め込みつつ赤枠・番号バッジをベクター要素として焼き込むため
+ * （注釈が無いステップは元 PNG をそのまま入れるので拡張子も変わらない）。
  */
 export function stepImageFileName(step: ManualStepWithMeta, index: number): string {
-  return `${String(index + 1).padStart(2, "0")}_${frameFileName(step.imageUrl)}`;
+  const name = frameFileName(step.imageUrl);
+  const finalName = step.annotation ? name.replace(/\.png$/i, ".svg") : name;
+  return `${String(index + 1).padStart(2, "0")}_${finalName}`;
 }
 
 /**
