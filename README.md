@@ -126,6 +126,7 @@ app/
   api/search/route.ts          キャプションのベクトル検索
   api/ask/route.ts             動画への質問応答（テキスト→必要なら画像にエスカレーション）
   manual/page.tsx              操作マニュアル自動生成のUI
+  manual/WorkflowHeader.tsx    ヘッダーのワークフロー表示（メイン/サブエージェントの進捗を可視化）
   manual/ManualSteps.tsx       手順一覧 + ZIPエクスポート（Markdown + スクリーンショット）
   manual/QaChat.tsx            手順に質問するチャット（/api/ask を再利用）
   manual/AnnotatedFrame.tsx    スクリーンショットに赤枠・番号バッジを重ねる SVG オーバーレイ
@@ -143,6 +144,7 @@ lib/
   verification.ts          検証サブエージェントの純粋関数（候補時刻の選定・応答のパース）
   concurrency.ts            ワーカープール方式の並列実行ヘルパー（annotate / verify 共通）
   sse.ts                   SSE読み取りの汎用ヘルパー（/manual 用）
+  workflow.ts               ヘッダーのワークフロー表示用の状態導出（analyze/verify/annotate の進捗をステップ配列に変換）
   types.ts                 サーバ・クライアント共有の型
 samples/                動作確認用のサンプル動画とその生成スクリプト
 ```
@@ -223,6 +225,8 @@ MacBook Air M5 (32GB) での計測値:
 - **スクリーンショット検証サブエージェント（`/api/manual/verify`）は、検証と候補選択を1回のVLM呼び出しに統合している。** `answerFromFrames` と同じ「複数画像を1回のchat completionで見せる」パターンで、「現在の画像」+「新規候補（最大4枚）」をまとめて見せ、どれが説明に合うか選ばせる。これにより手順数×候補数の呼び出し爆発を避ける。候補時刻は `lib/verification.ts` の `selectCandidateTimes` が、手順の時刻に最も近い発話の前後（`start`/`end` 両方）から選ぶ。実データで検証: 22手順中10件が1周目で差し替わり、1件が2周目で確定、`needsReview: 0` で完了した。
 - **verify は annotate より先に実行する。** 画像を差し替えたら古い赤枠注釈は意味を持たなくなるため、差し替え時に `annotation` を無効化する。UI の自動起動チェーンも `analyze の done → verify（最大3周）→ annotate` の順。
 - **「要確認」バッジは、間違った画像を無理に残すより正直に不明を示す設計の結果。** verify が3周試しても説明文に合う画像が見つからない手順には `verification.needsReview: true` が付き、`ManualSteps.tsx` が黄色い「要確認」バッジを出す。原因は主に2つ: (1) 発話のタイミングと実際の画面操作のタイミングが大きくズレていて `selectCandidateTimes` の候補窓に入らない、(2) その操作の瞬間自体が動画内で一瞬すぎて、そもそも良いフレームが存在しない。実データでは「閉じるをクリックする」という手順で、候補にした発話開始時刻のフレームに別のボタン（「一覧画面」）がハイライトされており、どの候補も一致しなかった例がある。
+- **ヘッダーのワークフロー表示（`WorkflowHeader.tsx`）は、フェーズ判定を「枚数比較」ではなく「analyze の SSE で最後に届いたイベント種別」で行う。** `lib/workflow.ts` の `AnalyzePhase`（`"" → info → utterances → caption → summary → steps → done`）は route.ts の emit 順序がこの通りに単調であることに依存する。当初「`frames.length` が `frameCount` に届いたか」で画面解析の完了を判定する案もあったが、`api/manual/analyze/route.ts` はフレーム抽出失敗を握りつぶして `caption` イベントを送らないことがあり、枚数比較では画面解析ステップが永久に「完了」にならないケースがある。`summary` イベントの到着そのものを完了の証拠にすることでこれを回避した（枚数はあくまで detail 表示にだけ使う）。
+- **verify/annotate サブエージェントの完了・失敗は SSE の `done`/`error` イベントを主に、`finally` を保険として使う。** `finally` を無条件に「完了」にはできない: 手順が無い等の理由でエンドポイントが `Response.json({error}, {status:400})` を返すと `res.body` は truthy だが `data:` 行が1つも来ず、`readSse` はイベントを送らないまま正常終了する。この場合に無条件で完了扱いにすると 400/404 が「✓ 完了」と表示されてしまうため、`finally` では「まだ `running` のときだけ `failed` にする」関数型更新を使っている。
 
 ## スクリーンショット注釈・検証サブエージェント
 
